@@ -18,6 +18,13 @@ use url::Url;
 //});
 
 
+//Backend - backend api trait for staticimp
+// - each backend api should implement this interface
+// - TODO: implement higher-level helper functions (e.g. commit file to new branch and create MR)
+// - TODO: instead of returning HttpResponse for the client, return the appropriate data
+//   - then calling function can use the data
+// - TODO: refactor into BackendAPI and GitAPI (which implements BackendAPI)
+//   - then we have the flexibility to support non-git backends in the future (e.g. database or web service)
 #[async_trait::async_trait(?Send)]
 trait BackendAPI {
     async fn add_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>>;
@@ -27,6 +34,11 @@ trait BackendAPI {
     async fn get_branch(&self, client: &awc::Client, id: &str, branch: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>>;
 }
 
+//Config - staticimp configuration
+// - loaded from staticimp.yml, then overridden from environment vars
+// - right now only supports a single backend (gitlab)
+//   - TODO: clean solution to support multiple backends (which may use the same or different Backend)
+// - currently also implements BackendAPI (passes through to backend), but that will probably change with multiple backend support
 #[derive(Clone,Debug, Serialize, Deserialize)]
 struct Config {
     backend: Backend,
@@ -60,6 +72,10 @@ impl Config {
 
         Ok(cfg)
     }
+}
+
+#[async_trait::async_trait(?Send)]
+impl BackendAPI for Config {
     async fn add_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
         self.backend.add_file(client,id,path).await
     }
@@ -74,8 +90,11 @@ impl Config {
     }
 }
 
+//Backend - enum for backend apis
+//  - variants are the supported backend apis
+//  - BackendAPI implementation just passes through to the current variant
 #[derive(Clone,Debug, Serialize, Deserialize)]
-#[serde(tag = "driver")] //TODO: clean solution to support multiple backends (which may use the same or different Backend)
+#[serde(tag = "driver")]
 enum Backend {
     GitLab(GitLabAPI)
 }
@@ -105,6 +124,9 @@ impl BackendAPI for Backend {
     }
 }
 
+//GitLabAPI - implementation of the GitLab REST api
+//  - TODO: support oauth
+//  - TODO: return appropriate data instead of client response (see BackendAPI)
 #[derive(Clone,Debug, Serialize, Deserialize)]
 struct GitLabAPI {
     #[serde(alias = "api_v4_url")]
@@ -233,6 +255,8 @@ impl BackendAPI for GitLabAPI {
 //    }
 //}
 
+//Comment - struct for holding a comment
+// - TODO: make this generic, so that fields can be customized at config level
 #[derive(Serialize,Deserialize)]
 struct Comment {
     name: String,
@@ -313,6 +337,7 @@ async fn comment_yaml(comment: actix_web::web::Bytes) -> impl actix_web::Respond
 }
 
 
+//main - load config and start HttpServer
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let cfgpath = "staticimp.yml";
