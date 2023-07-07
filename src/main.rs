@@ -2,6 +2,8 @@
 //use actix_web::{get, web, App, HttpServer, Responder};
 use serde::Serialize;
 use serde::Deserialize;
+use actix_web::web::Data;
+use url::Url;
 //use futures::StreamExt;
 //
 
@@ -15,40 +17,115 @@ use serde::Deserialize;
 //    }
 //});
 
+
 #[async_trait::async_trait(?Send)]
-pub trait GitAPI {
-    async fn add_file(&self, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>>;
-    async fn get_file(&self, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>>;
+trait BackendAPI {
+    async fn add_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>>;
+    async fn get_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>>;
     //async fn get_file(&self, id: &str, path: &str) -> Result<bytes::Bytes,Box<dyn std::error::Error>>;
 }
 
-pub struct GitLabAPI {
-    api_url: String,
-    token: String,
-    client: awc::Client
+#[derive(Clone,Debug, Serialize, Deserialize)]
+struct Config {
+    //client: awc::Client,
+    backend: Backend
 }
 
-impl GitLabAPI {
-    pub fn new() -> Self {
-        GitLabAPI {
-            api_url: std::env::var("GITLAB_API_V4_URL").unwrap_or("".to_owned()),
-            token: std::env::var("GITLAB_TOKEN").unwrap_or("".to_owned()),
-            client: awc::Client::new()
+impl Config {
+    fn load(path: &str) -> Result<Self,Box<dyn std::error::Error>> {
+        let f = std::fs::File::open(path)?;
+        let mut cfg : Config = serde_yaml::from_reader(f)?;
+
+        //TODO: figure out cleaner solution (to take env var and value to conditionally override)
+        //  - either setter function or custom deserialize for backends
+        let env_gitlab_api = std::env::var("GITLAB_API_V4_URL").unwrap_or("".to_owned());
+        if !env_gitlab_api.is_empty() {
+            match cfg.backend {
+                Backend::GitLab(ref mut backend) => {
+                    backend.api = Url::parse(env_gitlab_api.as_str())?;
+                }
+            }
+        }
+        let env_gitlab_token = std::env::var("GITLAB_TOKEN").unwrap_or("".to_owned());
+        if !env_gitlab_token.is_empty() {
+            match cfg.backend {
+                Backend::GitLab(ref mut backend) => {
+                    backend.token = env_gitlab_token;
+                }
+            }
+        }
+
+        Ok(cfg)
+    }
+    async fn add_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        self.backend.add_file(client,id,path).await
+    }
+    async fn get_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        self.backend.get_file(client,id,path).await
+    }
+}
+
+#[derive(Clone,Debug, Serialize, Deserialize)]
+#[serde(tag = "driver")] //TODO: clean solution to support multiple backends (which may use the same or different Backend)
+enum Backend {
+    GitLab(GitLabAPI)
+}
+
+//TODO: map/list of Backends in Config (also implement proper serialization/deserialization ignoring client)
+#[async_trait::async_trait(?Send)]
+impl BackendAPI for Backend {
+    async fn add_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        match self {
+            Backend::GitLab(backend) => backend.add_file(client,id,path).await
+        }
+    }
+    async fn get_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        match self {
+            Backend::GitLab(backend) => backend.get_file(client,id,path).await
         }
     }
 }
 
+#[derive(Clone,Debug, Serialize, Deserialize)]
+struct GitLabAPI {
+    #[serde(alias = "api_v4_url")]
+    api: Url,
+    #[serde(default)]
+    token: String,
+}
+
+//impl Clone for GitLabAPI {
+//    fn clone(&self) -> Self {
+//        GitL
+//    }
+//}
+
+impl GitLabAPI {
+    //pub fn new() -> Self {
+    //    GitLabAPI {
+    //        //FIXME: error check url (and pull from config
+    //        api: Url::parse(std::env::var("GITLAB_API_V4_URL").unwrap().as_str()).unwrap(),
+    //        token: std::env::var("GITLAB_TOKEN").unwrap_or("".to_owned()),
+    //        //client: awc::Client::new()
+    //    }
+    //}
+}
+
 #[async_trait::async_trait(?Send)]
-impl GitAPI for GitLabAPI {
-    async fn add_file(&self, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+impl BackendAPI for GitLabAPI {
+    async fn add_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
         //TODO: figure out api for specifying args
         let request = serde_json::json!({
             "branch": "main",
             "content": "This is a test file\nand a second line",
             "commit_message": "test create file from rust"
         });
-        let path = url_escape::encode_component(path);
-        let mut result = self.client.post(format!("{}/projects/{}/repository/files/{}",self.api_url,id,path))
+        let mut url = self.api.clone();
+        url.path_segments_mut().map_err(|_| "Bad API Url")?
+            .extend(&["projects",id,"repository","files",path]);
+        //let path = url_escape::encode_component(path);
+        //let mut result = self.client.post(format!("{}/projects/{}/repository/files/{}",self.api_url,id,path))
+        let mut result = client.post(url.as_str())
             .insert_header(("User-Agent", "staticimp/0.1"))
             .insert_header(("PRIVATE-TOKEN", self.token.as_str()))
             //.send()
@@ -63,10 +140,13 @@ impl GitAPI for GitLabAPI {
             _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
         }
     }
-    async fn get_file(&self, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
-    //async fn get_file(&self, id: &str, path: &str) -> Result<bytes::Bytes,Box<dyn std::error::Error>> {
-        let path = url_escape::encode_component(path);
-        let mut result = self.client.get(format!("{}/projects/{}/repository/files/{}/raw",self.api_url,id,path))
+    async fn get_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        let mut url = self.api.clone();
+        url.path_segments_mut().map_err(|_| "Bad API Url")?
+            .extend(&["projects",id,"repository","files",path,"raw"]);
+        //let path = url_escape::encode_component(path);
+        //let mut result = self.client.get(format!("{}/projects/{}/repository/files/{}/raw",self.api_url,id,path))
+        let mut result = client.get(url.as_str())
             .insert_header(("User-Agent", "staticimp/0.1"))
             .insert_header(("PRIVATE-TOKEN", self.token.as_str()))
             .send()
@@ -120,18 +200,18 @@ async fn hello(name: actix_web::web::Path<String>) -> impl actix_web::Responder 
 }
 
 #[actix_web::get("/getfile/{id}/{path:.*}")]
-async fn getfile(pathargs: actix_web::web::Path<(String,String)>) -> impl actix_web::Responder {
+async fn getfile(cfg: Data<Config>, client: Data<awc::Client>, pathargs: actix_web::web::Path<(String,String)>) -> impl actix_web::Responder {
     let pathargs = pathargs.into_inner();
     let (id,path) = (pathargs.0, pathargs.1);
     
-    GitLabAPI::new().get_file(id.as_str(),path.as_str()).await
+    cfg.get_file(&client,id.as_str(),path.as_str()).await
 }
 
 #[actix_web::post("/addfile/{id}/{path:.*}")]
-async fn addfile(pathargs: actix_web::web::Path<(String,String)>) -> impl actix_web::Responder {
+async fn addfile(cfg: Data<Config>, client: Data<awc::Client>, pathargs: actix_web::web::Path<(String,String)>) -> impl actix_web::Responder {
     let pathargs = pathargs.into_inner();
     let (id,path) = (pathargs.0, pathargs.1);
-    GitLabAPI::new().add_file(id.as_str(),path.as_str()).await
+    cfg.add_file(&client,id.as_str(),path.as_str()).await
 }
 
 #[actix_web::post("/comment/form/")]
@@ -170,20 +250,30 @@ async fn comment_yaml(comment: actix_web::web::Bytes) -> impl actix_web::Respond
 }
 
 
-
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-//fn main() {
-    actix_web::HttpServer::new(|| actix_web::App::new()
-        .service(index)
-        .service(hello)
-        .service(getfile)
-        .service(addfile)
-        .service(comment_json)
-        .service(comment_form)
-        .service(comment_query)
-        .service(comment_yaml)
-        )
+    let cfgpath = "staticimp.yml";
+    let cfg = Config::load(cfgpath);
+    if let Err(e) = cfg {
+        //eprintln!("Error loading config: {:#?}",e);
+        eprintln!("Error loading {}: {}",cfgpath,e);
+        std::process::exit(1);
+    }
+    let cfg = Data::new(cfg.unwrap());
+    actix_web::HttpServer::new(
+        move || {
+            actix_web::App::new()
+                .app_data(cfg.clone())
+                .app_data(Data::new(awc::Client::new()))
+                .service(index)
+                .service(hello)
+                .service(getfile)
+                .service(addfile)
+                .service(comment_json)
+                .service(comment_form)
+                .service(comment_query)
+                .service(comment_yaml)
+        })
         .bind(("127.0.0.1", 8080))?
         .run()
         .await
