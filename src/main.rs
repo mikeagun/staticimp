@@ -23,12 +23,15 @@ trait BackendAPI {
     async fn add_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>>;
     async fn get_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>>;
     //async fn get_file(&self, id: &str, path: &str) -> Result<bytes::Bytes,Box<dyn std::error::Error>>;
+    async fn get_project(&self, client: &awc::Client, id: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>>;
+    async fn get_branch(&self, client: &awc::Client, id: &str, branch: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>>;
 }
 
 #[derive(Clone,Debug, Serialize, Deserialize)]
 struct Config {
-    //client: awc::Client,
-    backend: Backend
+    backend: Backend,
+    host:String,
+    port:u16
 }
 
 impl Config {
@@ -63,6 +66,12 @@ impl Config {
     async fn get_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
         self.backend.get_file(client,id,path).await
     }
+    async fn get_project(&self, client: &awc::Client, id: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        self.backend.get_project(client,id).await
+    }
+    async fn get_branch(&self, client: &awc::Client, id: &str, branch: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        self.backend.get_branch(client,id,branch).await
+    }
 }
 
 #[derive(Clone,Debug, Serialize, Deserialize)]
@@ -84,6 +93,16 @@ impl BackendAPI for Backend {
             Backend::GitLab(backend) => backend.get_file(client,id,path).await
         }
     }
+    async fn get_project(&self, client: &awc::Client, id: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        match self {
+            Backend::GitLab(backend) => backend.get_project(client,id).await
+        }
+    }
+    async fn get_branch(&self, client: &awc::Client, id: &str, branch: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        match self {
+            Backend::GitLab(backend) => backend.get_branch(client,id,branch).await
+        }
+    }
 }
 
 #[derive(Clone,Debug, Serialize, Deserialize)]
@@ -102,12 +121,6 @@ struct GitLabAPI {
 
 impl GitLabAPI {
     //pub fn new() -> Self {
-    //    GitLabAPI {
-    //        //FIXME: error check url (and pull from config
-    //        api: Url::parse(std::env::var("GITLAB_API_V4_URL").unwrap().as_str()).unwrap(),
-    //        token: std::env::var("GITLAB_TOKEN").unwrap_or("".to_owned()),
-    //        //client: awc::Client::new()
-    //    }
     //}
 }
 
@@ -146,6 +159,44 @@ impl BackendAPI for GitLabAPI {
             .extend(&["projects",id,"repository","files",path,"raw"]);
         //let path = url_escape::encode_component(path);
         //let mut result = self.client.get(format!("{}/projects/{}/repository/files/{}/raw",self.api_url,id,path))
+        let mut result = client.get(url.as_str())
+            .insert_header(("User-Agent", "staticimp/0.1"))
+            .insert_header(("PRIVATE-TOKEN", self.token.as_str()))
+            .send()
+            //.content_type("application/json")
+            //.send_json(&request)
+            .await?;
+        let rbody = result.body().await?;
+        //TODO: don't send full gitlab response (or have debug flag to enable)
+        //  - normally should send back higher level error
+        match result.status() {
+            awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
+            _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
+        }
+    }
+    async fn get_project(&self, client: &awc::Client, id: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        let mut url = self.api.clone();
+        url.path_segments_mut().map_err(|_| "Bad API Url")?
+            .extend(&["projects",id]);
+        let mut result = client.get(url.as_str())
+            .insert_header(("User-Agent", "staticimp/0.1"))
+            .insert_header(("PRIVATE-TOKEN", self.token.as_str()))
+            .send()
+            //.content_type("application/json")
+            //.send_json(&request)
+            .await?;
+        let rbody = result.body().await?;
+        //TODO: don't send full gitlab response (or have debug flag to enable)
+        //  - normally should send back higher level error
+        match result.status() {
+            awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
+            _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
+        }
+    }
+    async fn get_branch(&self, client: &awc::Client, id: &str, branch: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        let mut url = self.api.clone();
+        url.path_segments_mut().map_err(|_| "Bad API Url")?
+            .extend(&["projects",id,"repository","branches",branch]);
         let mut result = client.get(url.as_str())
             .insert_header(("User-Agent", "staticimp/0.1"))
             .insert_header(("PRIVATE-TOKEN", self.token.as_str()))
@@ -214,6 +265,18 @@ async fn addfile(cfg: Data<Config>, client: Data<awc::Client>, pathargs: actix_w
     cfg.add_file(&client,id.as_str(),path.as_str()).await
 }
 
+#[actix_web::get("/getproject/{id}")]
+async fn getproject(cfg: Data<Config>, client: Data<awc::Client>, project_id: actix_web::web::Path<String>) -> impl actix_web::Responder {
+    cfg.get_project(&client,project_id.as_str()).await
+}
+
+#[actix_web::get("/getbranch/{id}/{branch}")]
+async fn getbranch(cfg: Data<Config>, client: Data<awc::Client>, pathargs: actix_web::web::Path<(String,String)>) -> impl actix_web::Responder {
+    let pathargs = pathargs.into_inner();
+    let (id,branch) = (pathargs.0, pathargs.1);
+    cfg.get_branch(&client,id.as_str(),branch.as_str()).await
+}
+
 #[actix_web::post("/comment/form/")]
 async fn comment_form(actix_web::web::Form(form): actix_web::web::Form<Comment>) -> impl actix_web::Responder {
     match serde_yaml::to_string(&form) {
@@ -260,6 +323,9 @@ async fn main() -> std::io::Result<()> {
         std::process::exit(1);
     }
     let cfg = Data::new(cfg.unwrap());
+    let host = cfg.host.clone();
+    let port = cfg.port;
+
     actix_web::HttpServer::new(
         move || {
             actix_web::App::new()
@@ -269,12 +335,14 @@ async fn main() -> std::io::Result<()> {
                 .service(hello)
                 .service(getfile)
                 .service(addfile)
+                .service(getproject)
+                .service(getbranch)
                 .service(comment_json)
                 .service(comment_form)
                 .service(comment_query)
                 .service(comment_yaml)
         })
-        .bind(("127.0.0.1", 8080))?
+        .bind((host.as_str(), port))?
         .run()
         .await
 }
