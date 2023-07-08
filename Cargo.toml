@@ -18,3 +18,5 @@ futures = "0.3.28"
 async-trait = "0.1.71" #only needed until async traits are in stable rust
 bytes = "1.4.0"
 url = { version = "2.2.2", features = [ "serde" ] }
+#gitlab = { version = "0.1601.0", features = [ "futures-util", "async-trait" ] }
+gitlab = { version = "0.1601.0", features = [ "async-trait" ] }

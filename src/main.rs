@@ -3,7 +3,8 @@
 use serde::Serialize;
 use serde::Deserialize;
 use actix_web::web::Data;
-use url::Url;
+//use url::Url;
+use gitlab::api::AsyncQuery;
 //use futures::StreamExt;
 //
 
@@ -53,18 +54,18 @@ impl Config {
 
         //TODO: figure out cleaner solution (to take env var and value to conditionally override)
         //  - either setter function or custom deserialize for backends
-        let env_gitlab_api = std::env::var("GITLAB_API_V4_URL").unwrap_or("".to_owned());
-        if !env_gitlab_api.is_empty() {
+        let env_gitlab_host = std::env::var("GITLAB_HOST").unwrap_or("".to_owned());
+        if !env_gitlab_host.is_empty() {
             match cfg.backend {
-                Backend::GitLab(ref mut backend) => {
-                    backend.api = Url::parse(env_gitlab_api.as_str())?;
+                Backend::Gitlab(ref mut backend) => {
+                    backend.host = env_gitlab_host.to_owned();
                 }
             }
         }
         let env_gitlab_token = std::env::var("GITLAB_TOKEN").unwrap_or("".to_owned());
         if !env_gitlab_token.is_empty() {
             match cfg.backend {
-                Backend::GitLab(ref mut backend) => {
+                Backend::Gitlab(ref mut backend) => {
                     backend.token = env_gitlab_token;
                 }
             }
@@ -96,7 +97,7 @@ impl BackendAPI for Config {
 #[derive(Clone,Debug, Serialize, Deserialize)]
 #[serde(tag = "driver")]
 enum Backend {
-    GitLab(GitLabAPI)
+    Gitlab(GitlabAPI)
 }
 
 //TODO: map/list of Backends in Config (also implement proper serialization/deserialization ignoring client)
@@ -104,135 +105,116 @@ enum Backend {
 impl BackendAPI for Backend {
     async fn add_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
         match self {
-            Backend::GitLab(backend) => backend.add_file(client,id,path).await
+            Backend::Gitlab(backend) => backend.add_file(client,id,path).await
         }
     }
     async fn get_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
         match self {
-            Backend::GitLab(backend) => backend.get_file(client,id,path).await
+            Backend::Gitlab(backend) => backend.get_file(client,id,path).await
         }
     }
     async fn get_project(&self, client: &awc::Client, id: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
         match self {
-            Backend::GitLab(backend) => backend.get_project(client,id).await
+            Backend::Gitlab(backend) => backend.get_project(client,id).await
         }
     }
     async fn get_branch(&self, client: &awc::Client, id: &str, branch: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
         match self {
-            Backend::GitLab(backend) => backend.get_branch(client,id,branch).await
+            Backend::Gitlab(backend) => backend.get_branch(client,id,branch).await
         }
     }
 }
 
-//GitLabAPI - implementation of the GitLab REST api
+//GitlabAPI - implementation of the Gitlab REST api
 //  - TODO: support oauth
 //  - TODO: return appropriate data instead of client response (see BackendAPI)
 #[derive(Clone,Debug, Serialize, Deserialize)]
-struct GitLabAPI {
-    #[serde(alias = "api_v4_url")]
-    api: Url,
+struct GitlabAPI {
+    host: String,
     #[serde(default)]
     token: String,
 }
 
-//impl Clone for GitLabAPI {
+//impl Clone for GitlabAPI {
 //    fn clone(&self) -> Self {
 //        GitL
 //    }
 //}
 
-impl GitLabAPI {
+impl GitlabAPI {
     //pub fn new() -> Self {
     //}
 }
 
+#[derive(Clone,Debug, Serialize, Deserialize)]
+struct Commit {
+    id : String
+}
+
+#[derive(Clone,Debug, Serialize, Deserialize)]
+struct Branch {
+    name : String,
+    commit : Commit
+}
+
+#[derive(Clone,Debug, Serialize, Deserialize)]
+struct GitlabProject {
+    id : u32,
+    path_with_namespace : String
+}
+
+//TODO: don't send full gitlab response (or have debug flag to enable)
+//  - normally should send back higher level error
 #[async_trait::async_trait(?Send)]
-impl BackendAPI for GitLabAPI {
-    async fn add_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
-        //TODO: figure out api for specifying args
-        let request = serde_json::json!({
-            "branch": "main",
-            "content": "This is a test file\nand a second line",
-            "commit_message": "test create file from rust"
-        });
-        let mut url = self.api.clone();
-        url.path_segments_mut().map_err(|_| "Bad API Url")?
-            .extend(&["projects",id,"repository","files",path]);
-        //let path = url_escape::encode_component(path);
-        //let mut result = self.client.post(format!("{}/projects/{}/repository/files/{}",self.api_url,id,path))
-        let mut result = client.post(url.as_str())
-            .insert_header(("User-Agent", "staticimp/0.1"))
-            .insert_header(("PRIVATE-TOKEN", self.token.as_str()))
-            //.send()
-            //.content_type("application/json")
-            .send_json(&request)
-            .await?;
-        let rbody = result.body().await?;
-        //TODO: don't send full gitlab response (or have debug flag to enable)
-        //  - normally should send back higher level error
-        match result.status() {
-            awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
-            _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
-        }
+impl BackendAPI for GitlabAPI {
+    async fn add_file(&self, _client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        let client = gitlab::GitlabBuilder::new(self.host.as_str(),self.token.as_str()).build_async().await?;
+        let branch = "main";
+        let content : &[u8] = b"This is a test file\nand a second line";
+        let commit_message = "test create file from rust";
+        let endpoint = gitlab::api::projects::repository::files::CreateFile::builder().project(id).branch(branch).file_path(path).content(content).commit_message(commit_message).build()?;
+        //endpoint.query_async(&client).await?;
+        //Ok(actix_web::HttpResponse::Ok().finish())
+        let response : Vec<u8> = gitlab::api::raw(endpoint).query_async(&client).await?;
+        Ok(actix_web::HttpResponse::Ok().body(response))
+        //match result.status() {
+        //    awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
+        //    _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
+        //}
     }
-    async fn get_file(&self, client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
-        let mut url = self.api.clone();
-        url.path_segments_mut().map_err(|_| "Bad API Url")?
-            .extend(&["projects",id,"repository","files",path,"raw"]);
-        //let path = url_escape::encode_component(path);
-        //let mut result = self.client.get(format!("{}/projects/{}/repository/files/{}/raw",self.api_url,id,path))
-        let mut result = client.get(url.as_str())
-            .insert_header(("User-Agent", "staticimp/0.1"))
-            .insert_header(("PRIVATE-TOKEN", self.token.as_str()))
-            .send()
-            //.content_type("application/json")
-            //.send_json(&request)
-            .await?;
-        let rbody = result.body().await?;
-        //TODO: don't send full gitlab response (or have debug flag to enable)
-        //  - normally should send back higher level error
-        match result.status() {
-            awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
-            _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
-        }
+    async fn get_file(&self, _client: &awc::Client, id: &str, path: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        let ref_ = "main";
+        let client = gitlab::GitlabBuilder::new(self.host.as_str(),self.token.as_str()).build_async().await?;
+        let endpoint = gitlab::api::projects::repository::files::FileRaw::builder().project(id).file_path(path).ref_(ref_).build()?;
+        let file : Vec<u8> = gitlab::api::raw(endpoint).query_async(&client).await?;
+        
+        Ok(actix_web::HttpResponse::Ok().body(file))
+        //match result.status() {
+        //    awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
+        //    _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
+        //}
     }
-    async fn get_project(&self, client: &awc::Client, id: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
-        let mut url = self.api.clone();
-        url.path_segments_mut().map_err(|_| "Bad API Url")?
-            .extend(&["projects",id]);
-        let mut result = client.get(url.as_str())
-            .insert_header(("User-Agent", "staticimp/0.1"))
-            .insert_header(("PRIVATE-TOKEN", self.token.as_str()))
-            .send()
-            //.content_type("application/json")
-            //.send_json(&request)
-            .await?;
-        let rbody = result.body().await?;
-        //TODO: don't send full gitlab response (or have debug flag to enable)
-        //  - normally should send back higher level error
-        match result.status() {
-            awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
-            _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
-        }
+    async fn get_project(&self, _client: &awc::Client, id: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        let client = gitlab::GitlabBuilder::new(self.host.as_str(),self.token.as_str()).build_async().await?;
+        let endpoint = gitlab::api::projects::Project::builder().project(id).build()?;
+        let p : GitlabProject = endpoint.query_async(&client).await?;
+        let json = serde_json::to_string_pretty(&p)?;
+        Ok(actix_web::HttpResponse::Ok().body(json))
+        //match result.status() {
+        //    awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
+        //    _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
+        //}
     }
-    async fn get_branch(&self, client: &awc::Client, id: &str, branch: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
-        let mut url = self.api.clone();
-        url.path_segments_mut().map_err(|_| "Bad API Url")?
-            .extend(&["projects",id,"repository","branches",branch]);
-        let mut result = client.get(url.as_str())
-            .insert_header(("User-Agent", "staticimp/0.1"))
-            .insert_header(("PRIVATE-TOKEN", self.token.as_str()))
-            .send()
-            //.content_type("application/json")
-            //.send_json(&request)
-            .await?;
-        let rbody = result.body().await?;
-        //TODO: don't send full gitlab response (or have debug flag to enable)
-        //  - normally should send back higher level error
-        match result.status() {
-            awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
-            _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
-        }
+    async fn get_branch(&self, _client: &awc::Client, id: &str, branch: &str) -> Result<actix_web::HttpResponse,Box<dyn std::error::Error>> {
+        let client = gitlab::GitlabBuilder::new(self.host.as_str(),self.token.as_str()).build_async().await?;
+        let endpoint = gitlab::api::projects::repository::branches::Branch::builder().project(id).branch(branch).build()?;
+        let b : Branch = endpoint.query_async(&client).await?;
+        let json = serde_json::to_string_pretty(&b)?;
+        Ok(actix_web::HttpResponse::Ok().body(json))
+        //match result.status() {
+        //    awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
+        //    _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
+        //}
     }
 }
 
@@ -266,13 +248,13 @@ struct Comment {
 
 #[actix_web::get("/")]
 async fn index() -> impl actix_web::Responder {
-    "Hello, World!"
+    "Hello from staticimp"
 }
-
-#[actix_web::get("/hello/{name}")]
-async fn hello(name: actix_web::web::Path<String>) -> impl actix_web::Responder {
-    format!("Hello {}!", &name)
-}
+//
+//#[actix_web::get("/hello/{name}")]
+//async fn hello(name: actix_web::web::Path<String>) -> impl actix_web::Responder {
+//    format!("Hello {}!", &name)
+//}
 
 #[actix_web::get("/getfile/{id}/{path:.*}")]
 async fn getfile(cfg: Data<Config>, client: Data<awc::Client>, pathargs: actix_web::web::Path<(String,String)>) -> impl actix_web::Responder {
@@ -357,7 +339,7 @@ async fn main() -> std::io::Result<()> {
                 .app_data(cfg.clone())
                 .app_data(Data::new(awc::Client::new()))
                 .service(index)
-                .service(hello)
+                //.service(hello)
                 .service(getfile)
                 .service(addfile)
                 .service(getproject)
