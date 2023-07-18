@@ -1,0 +1,20 @@
+host: 127.0.0.1
+port: 8080
+backends:
+  gitlab:
+    driver: gitlab
+    host: git.example.com
+
+#project_config_path: "staticimp.yml"
+entries: 
+  comment:
+    fields:
+      allowed: [ "name", "email", "url", "message" ]
+      required: ["name", "email", "message"]
+    review: false
+    format: yml
+    git:
+      path: "data/comments/{options.slug}"
+      filename: "comment-{@timestamp}.yml"
+      branch: main
+      commit_message: "New staticimp entry"

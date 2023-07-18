@@ -2,7 +2,7 @@
 
 ## Introduction
 staticimp (static imp) is a rust-based web service that receives user-generated content and uploads it to a GitLab (and soon GitHub) repository.
-The main purpose is to support dynamic content (e.g. blog post comments) on a fully static website using automatic build+deployment.
+The main goal of staticimp is to support dynamic content (e.g. blog post comments) on a fully static website using automatic build+deployment.
 
 staticimp consists of a small web service which handles POST requests from HTML forms (it can also accept json and yaml),
 performs some validation and transformations, then uploads them using the GitLab REST API. staticman also supports moderation,
@@ -10,10 +10,9 @@ where the file is commited to a new branch and a merge request is created, inste
 
 The actual rendering of the comments (or whatever you are using staticimp for) is up to your static site generator (SSG),
 staticimp is just concerned with pushing the user generated content to the repo.
-The files staticimp creates are compatible with staticman, so if for example you are using a hugo theme that already supports staticman,
-all you need to change is the staticimp.yml configuration file and the POST url.
 
-To run staticimp, you'll need a server somewhere with a public ip, or you can set up a solution like Cloud run to host the service.
+staticimp, like Staticman, creates yaml/json files in a repository, so if for example you are using a hugo theme that already supports staticman,
+you should be able to support staticimp with minimal changes (staticimp.yml and changing the POST url).
 
 ## Inspiration
 staticimp was inspired by the awesome project [Staticman](https://github.com/eduardoboucas/staticman).
