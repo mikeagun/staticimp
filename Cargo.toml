@@ -20,5 +20,7 @@ bytes = "1.4.0"
 url = { version = "2.2.2", features = [ "serde" ] }
 #gitlab = { version = "0.1601.0", features = [ "futures-util", "async-trait" ] }
 gitlab = { version = "0.1601.0", features = [ "async-trait" ] }
+#microtemplate = "1.0.3"
 uuid = { version = "1.4.0", features = [ "v4" ] }
-microtemplate = "1.0.3"
+chrono = "0.4.26"
+regex = "1.9.1"

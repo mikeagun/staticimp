@@ -25,22 +25,54 @@ While that could probably be reduced some, Node isn't known for for being lightw
 staticimp is my solution to the static-site-dynamic-content problem. RAM usage is not as low as it could be, but its a lot lower than staticman and it starts in milliseconds.
 It doesn't (yet) support all the features of staticman, but I welcome pull requests and have a few more features planned (like GitHub support).
 
+
+# Features:
+- clean implementation intended to be flexible and extensible
+- configuration can use placeholders to fill in/transform entries
+  - uses nanotemplate (in this crate) for rendering placeholders
+- loads configuration from `staticman.yml`
+  - doesn't yet support project-specific config or json
+- entries are validated by checking for allowed/required fields
+  - doesn't yet support any formatting validation
+- extra fields generated from config
+- has code to load/handle field transformations (but doesn't have any implemented yet)
+- can send processed entries to gitlab/debug backends
+  - doesn't yet support moderated comments (commit to new branch and submit pull request),
+    but I am working on that next so I can start using it on some sites I am helping build
+
+
+# Work In Progress
+
+staticimp is a work-in-progress. The features above all work, but thorough test code is still
+needed and there are some missing important features that I am still implementing.
+I am hoping to have staticimp feature-complete in the next week or two.
+
+**Features still to implement**
+- review branches
+- thorough test code
+- create and cache clients per-thread (rather than creating a new client for each request)
+- load project/branch-specific config files
+  - right now just loads the global conf at startup
+- implement field transformations
+- more documentation
+- logging
+- spam protection (probably reCAPTCHA)
+- github as a second backend
+- I might include a filesystem backend for easier configuration
+- specify allowed hosts for a backend
+
+
 ## Requirements
 - authentication token for the GitLab instance hosting your content repo
-- docker (or a rust build environment)
+- rust
+  - I plan on mostly running this in docker, so it will also include a Dockerfile + docker compose soon for easy running/tests
 
-## Running staticimp
-
-The quickest and easiest way to get staticimp running is docker.
-The project already contains a Dockerfile and docker-compose.yml, so configuring staticimp.yml and running `docker compose up -d` is enough.
-
-If you want to run staticman locally, set up a rust build environment and then run `cargo run --release` after you configure staticimp.yml.
 
 ## Configuring Repository
 The easiest way to use staticimp is have it commit files directly to your website content repository.
 Your CI/CD job stays exactly the same, and you just need to configure your SSG to display the staticimp content.
 
-Steps to get comment live:
+Steps to get comment live (with comments in website repo):
 - HTML Form POSTs to staticimp
 - staticimp commits files to website repo
 - CI/CD pipeline automatically rebuild site with new comments and deploy to live site
@@ -53,18 +85,16 @@ but in the best case your git history will still be thoroughly cluttered.
 Since I like keeping a (relatively) clean git history, I have staticimp push files to a separate repo, and then have the main content repo pull the latest
 changes on build.
 
-Steps to get comment live:
+Steps to get comment live (with separate comments repo):
 - HTML Form POSTs to staticimp
 - staticimp commits files to separate comments repo
 - comments repo CI/CD triggers website repo build+deploy pipeline
 - CI/CD pipeline automatically rebuild site with new comments and deploy to live site
   - added to the build step above is cloning the comments repo or making it a git submodule
 
-## Configuring staticimp for Site
+## Examples
 
-## Configuring staticimp service
-
-## Development/Contributions
+I'll write up some config examples after the features stabilize (hopefully over the next few weeks)
 
 ## Links
 

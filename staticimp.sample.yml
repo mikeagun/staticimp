@@ -1,16 +1,57 @@
+# host ip to listen on
 host: 127.0.0.1
+# port to listen on
 port: 8080
+
+# specify timestamp format (current default is compact iso8601 with milliseconds)
+#timestamp_format: "%Y%m%dT%H%M%S%.3fZ"
+
+# configured backends
+# key - backend name (can be whatever you want)
+# driver - type of backend (currently support gitlab and debug)
 backends:
+  debug:
+    driver: debug
   gitlab:
     driver: gitlab
+    # gitlab backend options:
+    # NOTE: both of these can be overriden by the matching <backend>_<var> environment variable
+    # host - hostname for the gitlab server (no leading https://)
+    # token - authentication token
     host: git.example.com
+    # specify token here or load from environment variable gitlab_token
+    #  - NOTE: the env var is backend-specific, so if you call your backend mygitlab, it would be mygitlab_token
+    #token=...
 
+
+# if project_config_path is set, staticimp looks for a project-specific config file at that path
+# - not implemented yet though
 #project_config_path: "staticimp.yml"
+
+
+# configured entry types
+# key - entry type (can be whatever you want)
+# fields - configuration for processing entry fields
+# review - whether to moderate comments
+# format - serialization format for entries
+# git - git specific entry configuration
+#   - all the git config parameters support placeholders
+#   path - path of directory to store entries in
+#   filename - name of entry file
+#   branch - branch to commit entries to
+#     - if review enabled, commits entry to new branch and submits MR to target branch
+#   commit_message - commit message to use
 entries: 
   comment:
     fields:
-      allowed: [ "name", "email", "url", "message" ]
-      required: ["name", "email", "message"]
+      #allowed: [ "name", "email", "url", "message" ]
+      allowed: ["name", "email", "website", "comment", "replyThread", "replyName", "replyID"]
+      required: ["name", "email", "comment"]
+      extra:
+        _id:
+          value: "{@id}"
+        date:
+          value: "{@date:%+}"
     review: false
     format: yml
     git:
