@@ -1,9 +1,9 @@
-//! Simple module for sending [Entry]s to [Backend]s
+//! Simple module for sending sets of fields to backend APIs
 //!
-//! staticimp Takes [Entry]s with fields, performs validation and transformations,
-//! and then sends the entry to a backend (currently just gitlab).
+//! staticimp takes [Entry]s with fields, performs validation and transformations,
+//! and then sends the entry to a backend (currently just gitlab or the debug backend).
 //!
-//! All the code was written by Michael Agun, but this project was inspired entirely by
+//! All the code was written by me (Michael Agun), but this project was inspired by
 //! [Staticman](https://staticman.net/).
 //! - this was originally written because staticman was too heavy for some serverless websites I am
 //! building, but it is an awesome project and you should check it out too, especially if you are
@@ -13,7 +13,7 @@
 //! Features:
 //! - clean implementation intended to be flexible and extensible
 //! - configuration can use placeholders to fill in/transform entries
-//!   - uses nanotemplate (in this crate) for rendering placeholders
+//!   - uses rendertemplate (in this crate) for rendering placeholders
 //! - loads configuration from `staticman.yml`
 //!   - doesn't yet support project-specific config or json
 //! - entries are validated by checking for allowed/required fields
@@ -26,8 +26,8 @@
 //!
 //! # Work In Progress
 //!
-//! staticimp is a work-in-progress. The features above all work, but thorough test code is still
-//! needed and there are some missing important features that I am still implementing
+//! staticimp is a work-in-progress. The features above all work, but test code isn't included yet
+//! and there are some missing important features that I am still implementing
 //!
 //! **Features still to implement**
 //! - review branches
@@ -70,9 +70,9 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use uuid::Uuid;
 use chrono::prelude::*;
-use crate::nanotemplate;
-use nanotemplate::render;
-use nanotemplate::Render;
+use crate::rendertemplate;
+use rendertemplate::render_str;
+use rendertemplate::Render;
 use std::borrow::Cow;
 //use std::cell::RefCell;
 //use std::ops::Deref;
@@ -212,13 +212,12 @@ struct GeneratedField {
 }
 
 /// Renders a generated field
-impl Render<&NewEntry> for &GeneratedField {
-    type Target = ImpResult<String>;
+impl Render<&NewEntry,ImpResult<String>> for GeneratedField {
     /// create generated field for NewEntry
     ///
     /// currently just replaces placeholders in self.value
     fn render(&self, entry : &NewEntry) -> ImpResult<String> {
-        Ok(render(&self.value,entry))
+        Ok(render_str(&self.value,entry))
     }
 }
 
@@ -632,18 +631,18 @@ impl NewEntry {
 }
 
 /// placeholder rendering for entry processing
-impl<'a> Render<&'a str> for &'a NewEntry {
-    /// renders entry processing placeholders to a [Cow]
-    ///
-    /// returns [Cow::Borrowed] for everything but formatted dates
-    /// timestamp is prerendered, 
-    type Target = Option<Cow<'a,str>>;
+///
+/// renders entry processing placeholders to a [Cow]
+///
+/// returns [Cow::Borrowed] for everything but formatted dates
+/// timestamp is prerendered, 
+impl<'a> Render<&str,Option<Cow<'a,str>>> for &'a NewEntry {
     /// renders a Entry field or config value for a NewEntry
     ///
     /// return value is Option<Cow> borrowed from entry whenever possible
     ///
     /// - `placeholder` - the placeholder to render
-    fn render(&self, placeholder : &str) -> Self::Target {
+    fn render(&self, placeholder : &str) -> Option<Cow<'a,str>> {
         //TODO: should we return empty string or placeholder name on no match?
         if placeholder.starts_with('@') { //special generated vars
             //self.special.get(placeholder).map_or(&"",|v| &v)
@@ -683,7 +682,7 @@ impl<'a> Render<&'a str> for &'a NewEntry {
 
 //NOTE: this is the old placeholder rendering code using microtemplate
 // - microtemplate only allows &str return values and readonly context, so it's now been replaced
-// by nanotemplate so we can return generated values for placeholders
+// by rendertemplate so we can return generated values for placeholders
 // - I'll probably delete this code in the next commit -- just for posterity
 //impl microtemplate::Context for &NewEntry {
 //    //TODO: microtemplate doesn't have a good way to return expansion errors, so we just return
@@ -727,25 +726,25 @@ impl<'a> Render<&'a str> for &'a NewEntry {
 //}
 
 /// Builder for [GitEntry]s from [NewEntry]s
-impl Render<NewEntry> for EntryConfig {
-    /// builds git-specific entry from config and NewEntry
-    type Target = ImpResult<GitEntry>;
+///
+/// builds git-specific entry from config and NewEntry
+impl Render<NewEntry,ImpResult<GitEntry>> for EntryConfig {
     /// build GitEntry from NewEntry context
     fn render(&self, entry : NewEntry) -> ImpResult<GitEntry> {
         if entry.branch.is_empty() {
             Err(ImpError::BadRequest("","Must specify branch".into()))
         } else if let Some(gitconf) = self.git.as_ref() {
-            let branch : String = render(&gitconf.branch,&entry);
+            let branch : String = render_str(&gitconf.branch,&entry);
             if !branch.is_empty() && branch != entry.branch {
                 Err(ImpError::BadRequest("","Branch not allowed".into()))
             } else {
                 use std::path::Path;
-                let file_path : String = render(&gitconf.path,&entry);
-                let filename : String = render(&gitconf.filename,&entry);
+                let file_path : String = render_str(&gitconf.path,&entry);
+                let filename : String = render_str(&gitconf.filename,&entry);
                 let file_path = Path::new(&file_path).join(&filename).to_str()
                     .ok_or_else(|| ImpError::BadRequest("","Bad Entry Path".to_string().into()))?.to_string();
-                let branch = render(&gitconf.branch,&entry);
-                let commit_message = render(&gitconf.commit_message,&entry);
+                let branch = render_str(&gitconf.branch,&entry);
+                let commit_message = render_str(&gitconf.commit_message,&entry);
                 // destructure entry so we can move instead of cloning fields
                 let NewEntry { project_id, entry, .. } = entry;
                 Ok(GitEntry {

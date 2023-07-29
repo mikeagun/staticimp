@@ -12,7 +12,7 @@
 
 //staticimp:
 
-mod nanotemplate;
+mod rendertemplate;
 mod staticimp;
 
 use staticimp::*;
