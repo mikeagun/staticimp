@@ -252,6 +252,7 @@ impl Render<&NewEntry, ImpResult<String>> for GeneratedField {
 /// - `extra` - fields to generate and add to entry
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct FieldConfig {
+    #[serde(default)]
     allowed: HashSet<String>,
     #[serde(default)]
     required: HashSet<String>,
@@ -335,14 +336,17 @@ impl SerializationFormat {
 /// Git-specific entry config
 ///
 /// placeholders are allowed so configuration values can be pulled from entry fields and query
-/// options
+/// parameters
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GitEntryConfig {
     /// Directory path to store entry under
+    #[serde(default = "GitEntryConfig::default_path")]
     path: String,
     /// Filename to use for entry
+    #[serde(default = "GitEntryConfig::default_filename")]
     filename: String,
     /// Branch to send entries to (or submit merge request for)
+    #[serde(default = "GitEntryConfig::default_branch")]
     branch: String,
     /// name of review branch for commit (when review enabled)
     #[serde(default = "GitEntryConfig::default_review_branch")]
@@ -356,11 +360,23 @@ pub struct GitEntryConfig {
 }
 
 impl GitEntryConfig {
-    /// the default review branch ( "staticimp_" + entry uid )
+    /// default entry path ( "data/entries")
+    fn default_path() -> String {
+        "data/entries".to_string()
+    }
+    /// default entry filename ( "comment-{@timestamp}.yml" )
+    fn default_filename() -> String {
+        "comment-{@timestamp}.yml".to_string()
+    }
+    /// default branch to send files to ( "main" )
+    fn default_branch() -> String {
+        "main".to_string()
+    }
+    /// default review branch ( "staticimp_{@id}" )
     fn default_review_branch() -> String {
         "staticimp_{@id}".to_string()
     }
-    /// the default review branch ( "staticimp_" + entry uid )
+    /// default merge request description
     fn default_mr_description() -> String {
         "new staticimp entry awaiting approval\n\nMerge the pull request to accept it, or close it to deny the entry".to_string()
     }
@@ -383,7 +399,11 @@ pub struct EntryConfig {
     /// Whether moderation is enabled
     #[serde(default)]
     review: bool,
+    /// Whether recaptcha is enabled
+    #[serde(default)]
+    recaptcha: bool,
     /// Entry serialization format
+    #[serde(default)]
     format: SerializationFormat,
     /// Git-specific entry config
     ///
@@ -453,11 +473,12 @@ impl BackendAPI for DebugConfig {
     }
     async fn get_conf(
         &mut self,
-        config: &Config,
-        project_id: &str,
-        ref_: &str,
+        _config: &Config,
+        _project_id: &str,
+        _ref_: &str,
     ) -> ImpResult<ProjectConfig> {
-        Err(ImpError::debug_pretty("", (config, project_id, ref_)))
+        //Err(ImpError::debug_pretty("", (config, project_id, ref_)))
+        Ok(ProjectConfig::new())
     }
 }
 
@@ -539,6 +560,12 @@ pub struct ProjectConfig {
     pub entries: HashMap<String, EntryConfig>,
 }
 
+impl ProjectConfig {
+    pub fn new() -> Self {
+        ProjectConfig { entries: HashMap::new() }
+    }
+}
+
 impl Config {
     /// Load configuration file
     ///
@@ -616,9 +643,9 @@ impl Config {
         project_id: String,
         branch: String,
         entry: Entry,
-        options: HashMap<String, String>,
+        params: HashMap<String, String>,
     ) -> NewEntry {
-        NewEntry::new(self, project_id, branch, entry, options)
+        NewEntry::new(self, project_id, branch, entry, params)
     }
 }
 
@@ -675,7 +702,7 @@ impl GitEntry {
     }
 }
 
-/// Context for expanding placeholders while processing an entry
+/// new entry with all context needed for processing placeholders
 #[derive(Default, Clone, Debug, Serialize)]
 pub struct NewEntry {
     /// uuid for entry
@@ -690,8 +717,8 @@ pub struct NewEntry {
     branch: String,
     /// entry fields
     entry: Entry,
-    /// options attached to request (HTTP query options)
-    options: HashMap<String, String>,
+    /// params attached to request (HTTP query parameterss)
+    params: HashMap<String, String>,
     //special : &'a HashMap<&'a str, String>,
 }
 
@@ -702,7 +729,7 @@ impl NewEntry {
         project_id: String,
         branch: String,
         entry: Entry,
-        options: HashMap<String, String>,
+        params: HashMap<String, String>,
     ) -> Self {
         let uid = Uuid::new_v4().to_string();
         let timestamp = Utc::now();
@@ -714,7 +741,7 @@ impl NewEntry {
             project_id,
             branch,
             entry,
-            options,
+            params,
             //special : HashMap::from([
             //    ( "@id", uid )
             //])
@@ -722,16 +749,19 @@ impl NewEntry {
     }
 
     /// render a formatted data (from `{date:format}` placeholders)
+    ///
+    /// - Uses [chrono::format::strftime] for formatting
     fn render_date(&self, fmt: &str) -> String {
         format!("{}", self.timestamp.format(fmt))
     }
 
     /// validate fields in entry
     fn validate_fields(self, conf: &FieldConfig) -> ImpResult<Self> {
+        //collect field keys used in entry
         let keys: HashSet<String> = self.entry.fields.keys().map(|s| s.to_string()).collect();
-        if !conf.required.is_subset(&keys) {
+        if !conf.required.is_subset(&keys) { //make sure all required keys are in entry
             Err(ImpError::BadRequest("", "Missing field(s)".into()))
-        } else if !keys.is_subset(&conf.allowed) {
+        } else if !keys.is_subset(&conf.allowed) { //make sure only allowed keys are used
             Err(ImpError::BadRequest("", "Unknown field(s)".into()))
         } else {
             // passed all validation requests, return self
@@ -742,7 +772,7 @@ impl NewEntry {
     /// Generate extra fields
     fn generate_fields<'a, I>(mut self, fields: I) -> ImpResult<Self>
     where
-        I: Iterator<Item = (&'a String, &'a GeneratedField)>,
+        I: IntoIterator<Item = (&'a String, &'a GeneratedField)>,
     {
         for (key, gen) in fields {
             let val = gen.render(&self)?;
@@ -754,7 +784,7 @@ impl NewEntry {
     /// Transform fields
     fn transform_fields<'a, I>(mut self, transforms: I) -> ImpResult<Self>
     where
-        I: Iterator<Item = &'a FieldTransform>,
+        I: IntoIterator<Item = &'a FieldTransform>,
     {
         for t in transforms {
             if let Some(field) = self.entry.fields.get_mut(&t.field) {
@@ -773,12 +803,15 @@ impl NewEntry {
     ///
     /// Processing Order:
     /// 1. validation
+    ///   - make sure only allowed fields are used and all required fields are present
     /// 2. extra fields
+    ///   - generated fields
     /// 3. transformations
+    ///   - list of [FieldTransform]s
     pub fn process_fields(self, conf: &FieldConfig) -> ImpResult<Self> {
         self.validate_fields(&conf)?
-            .generate_fields(conf.extra.iter())?
-            .transform_fields(conf.transforms.iter())
+            .generate_fields(&conf.extra)?
+            .transform_fields(&conf.transforms)
     }
 }
 
@@ -820,8 +853,8 @@ impl<'a> Render<&str, Option<Cow<'a, str>>> for &'a NewEntry {
                         .fields
                         .get(rhs)
                         .and_then(|v| Some(Cow::Borrowed(v.as_str())))
-                } else if lhs == "options" {
-                    self.options
+                } else if lhs == "params" {
+                    self.params
                         .get(rhs)
                         .and_then(|val| Some(Cow::Borrowed(val.as_str())))
                 } else {
@@ -1104,7 +1137,7 @@ impl BackendAPI for GitlabAPI {
             .await
         }
     }
-    /// get project-specific config
+    /// get project-specific gitlab backend config
     async fn get_conf(
         &mut self,
         config: &Config,

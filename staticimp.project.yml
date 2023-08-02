@@ -1,0 +1,34 @@
+# Project-specific staticimp entry types
+#
+# key - entry type (can be whatever you want)
+# fields - configuration for processing entry fields
+# review - whether to moderate comments
+# format - serialization format for entries
+# git - git specific entry configuration
+#   - all the git config parameters support placeholders
+#   path - path of directory to store entries in
+#   filename - name of entry file
+#   branch - branch to commit entries to
+#     - if review enabled, commits entry to new branch and submits MR to target branch
+#   commit_message - commit message to use
+entries:
+  comment:
+    fields:
+      #allowed: [ "name", "email", "url", "message" ]
+      allowed: ["name", "email", "website", "comment", "replyThread", "replyName", "replyID"]
+      required: ["name", "email", "comment"]
+      extra:
+        _id:
+          value: "{@id}"
+        date:
+          value: "{@date:%+}"
+      transforms:
+        - field: email
+          transform: md5
+    review: false
+    format: yml
+    git:
+      path: "data/comments/{params.slug}"
+      filename: "comment-{@timestamp}.yml"
+      branch: main
+      commit_message: "New staticimp entry"

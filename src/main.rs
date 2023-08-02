@@ -39,11 +39,13 @@ async fn index() -> impl actix_web::Responder {
 //use staticimp::ImpError;
 //use staticimp::OrImpResult;
 
-/// Handle POST to create new entry
+/// Handle POST to create new entry -- this is the main handler for staticimp
 ///
 /// takes backend,project,branch, and entry type from path
 ///
 /// entry fields taken from request body (based on ContentType)
+///
+/// params taken from request query parameters
 #[actix_web::post("/v1/entry/{backend}/{project:.*}/{branch}/{entry_type}")]
 async fn post_comment_handler(
     cfg: ConfigData,
@@ -71,19 +73,20 @@ async fn post_comment_handler(
 
     //get entry conf to use (from project if enabled)
     // - if project_config_path set we try project config first
-    //   - if we can't load project config we just fall back to global (no error)
-    // - if we didn't find (or didn't look for) project config, try global conf entry types
+    //   - if we can't load project config we error
+    // - if project doesn't have entry type, try global conf entry types
     // - if we never found entry conf it is an error
     // - entry conf in Cow so we don't need to clone global entry conf
     //   - borrowed from global conf or owned from project conf
     let entry_conf = if !cfg.project_config_path.is_empty() {
-        //project-conf enabled
+        //project-conf enabled -- get project conf file
+        // - error if we can't load project conf
         backend
             .get_conf(&cfg, &project_id, &branch)
-            .await
-            .ok() //if we can't load project config it isn't an error, we just fall back to global
-            .and_then(|mut project_conf| project_conf.entries.remove(&entry_type)) //get conf for request entry type
-            .and_then(|conf| Some(Cow::Owned(conf))) //wrap project conf in Cow::Owned
+            .await?
+            .entries
+            .remove(&entry_type) //all we care about is the current entry type
+            .and_then(|conf| Some(Cow::Owned(conf)))
     } else {
         //project conf disabled
         None
@@ -119,12 +122,12 @@ async fn post_comment_handler(
         return Err(ImpError::BadRequest("", "Bad Content-Type".into()));
     };
 
-    let query_args = web::Query::<HashMap<String, String>>::from_query(req.query_string())
+    let query_params = web::Query::<HashMap<String, String>>::from_query(req.query_string())
         .or_bad_request("Bad query args")?
         .into_inner();
 
     let newentry = cfg
-        .new_entry(project_id, branch, entry_fields, query_args)
+        .new_entry(project_id, branch, entry_fields, query_params)
         .process_fields(entry_conf.field_config())?;
 
     //create new entry

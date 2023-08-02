@@ -11,8 +11,8 @@ port: 8080
 # key - backend name (can be whatever you want)
 # driver - type of backend (currently support gitlab and debug)
 backends:
-  debug:
-    driver: debug
+  #debug:
+  #  driver: debug
   gitlab:
     driver: gitlab
     # gitlab backend options:
@@ -34,6 +34,7 @@ backends:
 # key - entry type (can be whatever you want)
 # fields - configuration for processing entry fields
 # review - whether to moderate comments
+#   - if true, entries get created in 
 # format - serialization format for entries
 # git - git specific entry configuration
 #   - all the git config parameters support placeholders
@@ -49,17 +50,20 @@ entries:
       allowed: ["name", "email", "website", "comment", "replyThread", "replyName", "replyID"]
       required: ["name", "email", "comment"]
       extra:
-        _id:
+        _id: #add comment uid as '_id' field
           value: "{@id}"
-        date:
+        date: #add entry timestamp (verbose ISO8601)
+          #for format syntax see: https://docs.rs/chrono/latest/chrono/format/strftime/index.html
           value: "{@date:%+}"
       transforms:
         - field: email
           transform: md5
-    review: false
-    format: yml
+    #review: false
+    #format: yml
     git:
-      path: "data/comments/{options.slug}"
-      filename: "comment-{@timestamp}.yml"
-      branch: main
-      commit_message: "New staticimp entry"
+      path: "data/comments/{params.slug}" #default: "data/comments"
+      #filename: "comment-{@timestamp}.yml"
+      #branch: main
+      #commit_message: "New staticimp entry"
+      #review_branch: "staticimp_{@id}"
+      #mr_description: "new staticimp entry awaiting approval\n\nMerge the pull request to accept it, or close it to deny the entry"
