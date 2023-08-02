@@ -24,3 +24,4 @@ gitlab = { version = "0.1601.0", features = [ "async-trait" ] }
 uuid = { version = "1.4.0", features = [ "v4" ] }
 chrono = "0.4.26"
 regex = "1.9.1"
+markdown-table = "0.2.0"

@@ -44,6 +44,7 @@
 //!
 //!
 //! TODO:
+//!   - implement derive macro(s)
 //!   - implement support for Result/Error
 //!   - consider streaming iterators
 //!   - consider escapes for parser (Token::Escape)
@@ -81,7 +82,7 @@
 //! struct Context {
 //!     name : &'static str
 //! }
-//! 
+//!
 //! impl Render<&str,Option<&'static str>> for Context {
 //!     fn render(&self, arg : &str) -> Option<&'static str> {
 //!         if arg == "name" {
@@ -91,18 +92,16 @@
 //!         }
 //!     }
 //! }
-//! 
+//!
 //! let template = "Hello {name}!";
 //! let context = Context { name : "World" };
 //! let rendered : String = render_str(&template, context);
-//! 
+//!
 //! assert_eq!( &rendered, "Hello World!" );
 //!
 //! ```
 //!
 //! [Cow] : std::borrow::Cow
-
-
 
 use std::{borrow::Cow, collections::HashMap, ops::Deref};
 //use std::fmt::Display;
@@ -118,27 +117,26 @@ use std::marker::PhantomData;
 ///// rendertemplate [Result]
 //type Result<T> = core::result::Result<T,Error>;
 
-
 /// generic trait for something that renders
 ///
 /// This and [RenderTo] are the main trait that rendertemplate is built around
-pub trait Render<X,Y> {
+pub trait Render<X, Y> {
     /// Render Y from X
-    fn render(&self, x : X) -> Y;
+    fn render(&self, x: X) -> Y;
 }
 
 /// generic trait for something renders and is consumed in the rendering
-/// 
+///
 /// Useful for chaining intermediate renders (e.g. modifications over iterators)
-pub trait RenderTo<X,Y> {
+pub trait RenderTo<X, Y> {
     /// Render Y from X, consuming self
-    fn render_to(self, x : X) -> Y;
+    fn render_to(self, x: X) -> Y;
 }
 
 /// generic trait for something that renders, and modifies itself in the rendering
-pub trait RenderMut<X,Y> {
+pub trait RenderMut<X, Y> {
     /// Render Y from X, mutating self
-    fn render_mut(&mut self, x : X) -> Y;
+    fn render_mut(&mut self, x: X) -> Y;
 }
 
 /// Text token
@@ -153,7 +151,7 @@ pub trait RenderMut<X,Y> {
 /// - `Placeholder` - placeholder needing replacement (without braces)
 /// - `Rendered` - rendered text [Cow] -- allows owned strings to be returned
 /// - `Unterminated` - unterminated placeholder at end of string
-#[derive(Debug,PartialEq,Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Token<'a> {
     /// Empty token
     Empty,
@@ -168,93 +166,92 @@ pub enum Token<'a> {
     ///
     /// Uses Cow for more flexible rendering and to get around lifetime issues
     /// - e.g. can contain wrapped str or Cow of generated [String]
-    Rendered(Cow<'a,str>),
+    Rendered(Cow<'a, str>),
 
     /// unterminated placeholder/escape
     ///
     /// allows for chunked parsing, and will always be the last token returned before None
     Unterminated(&'a str),
-
     //Escape(&'a str),
 }
 
 /// Utils for generic [Token] iterators
-pub trait TokenIterator<'a> : Iterator<Item = Token<'a>>+Sized {
+pub trait TokenIterator<'a>: Iterator<Item = Token<'a>> + Sized {
     /// concatenate [Token]s, dropping Placeholder/Unterminated tokens
     fn collect_display<T>(self) -> T
-        where
-            T : FromIterator<Token<'a>> {
+    where
+        T: FromIterator<Token<'a>>,
+    {
         self.filter(|tok| {
             //drop anything but Literal/Rendered tokens
             match tok {
                 Token::Literal(_) | Token::Rendered(_) => true,
-                _ => false
+                _ => false,
             }
-        }).collect()
+        })
+        .collect()
     }
 }
 
-/// something that Derefs to &str 
+/// something that Derefs to &str
 ///
 /// mainly to support [Token] renderers
 /// - helper traits/functions that work on tokens take StringType
 ///
 /// [OptionalStr] works with StringTypes
-pub trait StringType : AsRef<str> {
-}
+pub trait StringType: AsRef<str> {}
 
 /// Generic optional string
 ///
 /// non-options are wrapped in `Some(self)`, and [Option]s just return `self`
-/// - for Option<T> returns self
+/// - for `Option<T>` returns `self`
 /// - else wraps value as `Some(self)`
 ///
 /// This lets generic [Token] [Render]ing code handle both [Option]s and literal values
 pub trait OptionalStr {
-    type Value : StringType;
+    type Value: StringType;
     /// get optional string value
-    /// - for Option<T> returns self
+    /// - for `Option<T>` returns `self`
     /// - else wraps value as `Some(self)`
     fn value(self) -> Option<Self::Value>;
 }
 
 /// renders Token by replacing Placeholders
 ///
-/// automatically implemented for any [Render]<&str,Y> where Y impl OptionalStr
+/// generic for any [`Render<&str,Y>`] where Y impl OptionalStr
 ///
 /// ignores non [Placeholder](Token::Placeholder)s
-pub trait RenderPlaceholder<'x,'y,X,Y> : Render<X,Y>
+pub trait RenderPlaceholder<'x, 'y, X, Y>: Render<X, Y>
 where
     //'y : 'x,
-    X : StringType,
-    Y : OptionalStr,
-    Y::Value : AsRef<str>
+    X: StringType,
+    Y: OptionalStr,
+    Y::Value: AsRef<str>,
 {
     /// if tok is Placeholder returns render(tok) (or tok), else return tok
     ///
     /// wraps string handling code with token handling code (so you don't need to use tokens in
     /// your code)
-    fn render_placeholder(&self, tok : Token<'x>) -> Token<'y>;
+    fn render_placeholder(&self, tok: Token<'x>) -> Token<'y>;
 }
 
 /// renders [Token] iterators by mapping Placeholders to their values
-trait RenderPlaceholders<'x,'y> : TokenIterator<'x>
-{
+trait RenderPlaceholders<'x, 'y>: TokenIterator<'x> {
     /// creates iterator ([TokenIt]) over [Token]s in self which renders [Token::Placeholder]s
     /// using r
-    fn render_placeholders<X,Y,T>(self,r : T) -> TokenIt<'x,'y,X,Y,T,Self>
+    fn render_placeholders<X, Y, T>(self, r: T) -> TokenIt<'x, 'y, X, Y, T, Self>
     where
-        T : RenderPlaceholder<'x,'y,X,Y>,
-        X : StringType,
-        Y : OptionalStr,
-        Y::Value : AsRef<str>;
+        T: RenderPlaceholder<'x, 'y, X, Y>,
+        X: StringType,
+        Y: OptionalStr,
+        Y::Value: AsRef<str>;
 }
 
 /// placeholder-parsing iterator
 ///
 /// iterates over slices of the original string as [Token]s
 ///
-/// you can use [`SimpleParse::parse_simple`]<S,T>(s,t) to construct a SimpleParser
+/// you can use [`SimpleParse::parse_simple<S,T>()`] to construct a SimpleParser
 ///
 /// Doesn't copy text, but keeps a slice of it (so lifetime is tied to text lifetime)
 /// - returned tokens are also slices of text (zero clones made)
@@ -269,26 +266,26 @@ trait RenderPlaceholders<'x,'y> : TokenIterator<'x>
 /// ```
 pub struct SimpleParser<'a> {
     /// text still to be parsed
-    text : &'a str,
+    text: &'a str,
 }
 
 /// Rendering iterator
 ///
 /// Calls `r.render(i)` on each item `i` in `it`
 ///
-pub struct RenderIt<X,Y,T,It>
+pub struct RenderIt<X, Y, T, It>
 where
-    T : Render<X,Y>,
-    It : Iterator
+    T: Render<X, Y>,
+    It: Iterator,
 {
     /// iterator we are rendering from
-    it : It,
+    it: It,
     /// renderer to use on each `Item`
-    r : T,
+    r: T,
     /// placeholder so we can have X in type constraints
-    _phantomx : PhantomData<X>,
+    _phantomx: PhantomData<X>,
     /// placeholder so we can have Y in type constraints
-    _phantomy : PhantomData<Y>,
+    _phantomy: PhantomData<Y>,
 }
 
 /// Token Rendering iterator
@@ -296,21 +293,22 @@ where
 /// Calls `r.render(i)` on each Placeholder in `it`
 /// - non-Placeholders are passed through
 ///
-pub struct TokenIt<'x,'y,X,Y,T,It>
+pub struct TokenIt<'x, 'y, X, Y, T, It>
 where
     //'y : 'x,
-    X : StringType,
-    Y : OptionalStr,
-    T : RenderPlaceholder<'x,'y,X,Y>,
-    It : TokenIterator<'x> {
+    X: StringType,
+    Y: OptionalStr,
+    T: RenderPlaceholder<'x, 'y, X, Y>,
+    It: TokenIterator<'x>,
+{
     /// token iterator we are rendering from
-    it : It,
+    it: It,
     /// renderer to use
-    r : T,
+    r: T,
     /// lets us use X in type constraints
-    _phantomx : PhantomData<&'x X>,
+    _phantomx: PhantomData<&'x X>,
     /// lets us use Y in type constraints
-    _phantomy : PhantomData<&'y Y>,
+    _phantomy: PhantomData<&'y Y>,
 }
 
 /// Something that can be parsed by [SimpleParser]
@@ -320,7 +318,10 @@ pub trait SimpleParse {
 }
 
 /// lets string-likes be parsed by [SimpleParser]
-impl<T> SimpleParse for T where T : AsRef<str> {
+impl<T> SimpleParse for T
+where
+    T: AsRef<str>,
+{
     /// creates parser for string
     fn parse_simple(&'_ self) -> SimpleParser<'_> {
         SimpleParser::new(self.as_ref())
@@ -358,7 +359,7 @@ impl<'a> Token<'a> {
     /// Create rendered token
     ///
     /// returns owned [Cow]
-    fn rendered<'b>(s : &'a str) -> Token<'b> {
+    fn rendered<'b>(s: &'a str) -> Token<'b> {
         Token::Rendered(Cow::Owned(s.to_owned()))
     }
 }
@@ -377,7 +378,7 @@ impl<'a> Deref for Token<'a> {
         match self {
             Empty => &"",
             Literal(s) | Placeholder(s) | Unterminated(s) => &s,
-            Rendered(s) => s.as_ref()
+            Rendered(s) => s.as_ref(),
         }
     }
 }
@@ -393,7 +394,7 @@ impl<'a> FromIterator<Token<'a>> for String {
 }
 
 /// Collects Cow from [Token] Iterator
-impl<'a> FromIterator<Token<'a>> for Cow<'a,str> {
+impl<'a> FromIterator<Token<'a>> for Cow<'a, str> {
     /// build Owned [Cow] by concatenating each token slice
     fn from_iter<T: IntoIterator<Item = Token<'a>>>(iter: T) -> Self {
         let mut buf = String::new();
@@ -405,10 +406,13 @@ impl<'a> FromIterator<Token<'a>> for Cow<'a,str> {
 /// a StringType is any string-like (derefs to str) that implements Clone
 ///
 /// Clone is needed so Cow can convert to owned string
-impl<T> StringType for T where T : AsRef<str>+Clone {}
+impl<T> StringType for T where T: AsRef<str> + Clone {}
 
-/// Option<T> optional string (returns self)
-impl<T> OptionalStr for Option<T> where T : StringType {
+/// `Option<T>` optional string (returns `self`)
+impl<T> OptionalStr for Option<T>
+where
+    T: StringType,
+{
     /// Inner type of Option
     type Value = T;
     /// get self
@@ -417,7 +421,7 @@ impl<T> OptionalStr for Option<T> where T : StringType {
     }
 }
 
-/// &str optional string (returns Some(self))
+/// `&str` optional string (returns `Some(self`))
 impl OptionalStr for &str {
     /// Type of string
     type Value = Self;
@@ -427,7 +431,7 @@ impl OptionalStr for &str {
     }
 }
 
-/// &&str optional string (returns Some(self))
+/// `&&str` optional string (returns `Some(self)`)
 impl<'a> OptionalStr for &&'a str {
     /// Type of string
     type Value = &'a str;
@@ -437,7 +441,7 @@ impl<'a> OptionalStr for &&'a str {
     }
 }
 
-/// String optional string (returns Some(self))
+/// `String` optional string (returns `Some(self)`)
 impl OptionalStr for String {
     /// Type of string
     type Value = Self;
@@ -447,7 +451,7 @@ impl OptionalStr for String {
     }
 }
 
-/// &String optional string (returns Some(self))
+/// `&String` optional string (returns `Some(self)`)
 impl OptionalStr for &String {
     /// Type of string
     type Value = Self;
@@ -457,11 +461,11 @@ impl OptionalStr for &String {
     }
 }
 
-/// Cow<T> optional string (returns Some(self))
-impl<'a,T> OptionalStr for Cow<'a,T>
+/// `Cow<T>` optional string (returns `Some(self)`)
+impl<'a, T> OptionalStr for Cow<'a, T>
 where
-    T : Clone+StringType,
-    Cow<'a,T> : AsRef<str>
+    T: Clone + StringType,
+    Cow<'a, T>: AsRef<str>,
 {
     /// Type of string
     type Value = Self;
@@ -471,11 +475,11 @@ where
     }
 }
 
-/// &Cow<T> optional string (returns Some(self))
-impl<'a,T> OptionalStr for &Cow<'a,T>
+/// `&Cow<T>` optional string (returns `Some(self)`)
+impl<'a, T> OptionalStr for &Cow<'a, T>
 where
-    T : Clone+StringType,
-    Cow<'a,T> : AsRef<str>
+    T: Clone + StringType,
+    Cow<'a, T>: AsRef<str>,
 {
     /// Type of string
     type Value = Self;
@@ -489,18 +493,17 @@ where
 ///
 /// wraps any renderer that takes &str and returns [OptionalStr] to render Tokens by replacing
 /// placeholders (other tokens returned unmodified)
-impl<'a, Y,T> RenderPlaceholder<'a,'a,&'a str,Y> for T
+impl<'a, Y, T> RenderPlaceholder<'a, 'a, &'a str, Y> for T
 where
-    Y : OptionalStr,
-    T : Render<&'a str,Y>
+    Y: OptionalStr,
+    T: Render<&'a str, Y>,
 {
     /// if tok is a Placeholder, render it (otherwise return tok)
     ///
     /// render result is treated as OptionalStr
     /// - if value is None returns tok
     /// - if value is Some(s), returns owned [Token::Rendered] with s
-    fn render_placeholder(&self, tok : Token<'a>) -> Token<'a>
-    {
+    fn render_placeholder(&self, tok: Token<'a>) -> Token<'a> {
         if let Token::Placeholder(k) = tok {
             if let Some(val) = self.render(&k).value() {
                 Token::rendered(val.as_ref())
@@ -517,24 +520,24 @@ where
 ///
 /// implements `render_placeholders` to produce a new iterator over the items in self with
 /// placeholders rendered
-impl<'x,'y,It> RenderPlaceholders<'x,'y> for It
+impl<'x, 'y, It> RenderPlaceholders<'x, 'y> for It
 where
-    It : TokenIterator<'x>
+    It: TokenIterator<'x>,
 {
     /// returns an iterator which renders placeholders from self
     ///
     /// Calls T::render_placeholder on each item in self
-    fn render_placeholders<X,Y,T>(self,r : T) -> TokenIt<'x,'y,X,Y,T,It>
+    fn render_placeholders<X, Y, T>(self, r: T) -> TokenIt<'x, 'y, X, Y, T, It>
     where
-        X : StringType,
-        Y : OptionalStr,
-        T : RenderPlaceholder<'x,'y,X,Y>,
+        X: StringType,
+        Y: OptionalStr,
+        T: RenderPlaceholder<'x, 'y, X, Y>,
     {
         TokenIt {
-            it : self,
+            it: self,
             r,
-            _phantomx : PhantomData,
-            _phantomy : PhantomData
+            _phantomx: PhantomData,
+            _phantomy: PhantomData,
         }
     }
 }
@@ -542,27 +545,31 @@ where
 /// generic render implementation for iterators
 ///
 /// wraps [Iterator] in [RenderIt] (which iterates over the render of each item in It)
-impl<X,Y,T,It> RenderTo<T,RenderIt<X,Y,T,It>> for It
+impl<X, Y, T, It> RenderTo<T, RenderIt<X, Y, T, It>> for It
 where
-    T : Render<X,Y>,
-    It : Iterator
+    T: Render<X, Y>,
+    It: Iterator,
 {
     /// render each item using r
     ///
     /// returns a RenderIt wrapped around self (which calls T::render on each Item in self)
-    fn render_to(self, r : T) -> RenderIt<X,Y,T,It>
-    {
-        RenderIt { it : self, r, _phantomx : PhantomData, _phantomy : PhantomData }
+    fn render_to(self, r: T) -> RenderIt<X, Y, T, It> {
+        RenderIt {
+            it: self,
+            r,
+            _phantomx: PhantomData,
+            _phantomy: PhantomData,
+        }
     }
 }
 
 /// RenderIt iterator implementation
 ///
 /// calls render on each Item in wrapped iterator
-impl<Y,T,It> Iterator for RenderIt<It::Item,Y,T,It>
+impl<Y, T, It> Iterator for RenderIt<It::Item, Y, T, It>
 where
-    T : Render<It::Item,Y>,
-    It : Iterator
+    T: Render<It::Item, Y>,
+    It: Iterator,
 {
     type Item = Y;
 
@@ -577,27 +584,26 @@ where
 }
 
 /// impl TokenIterator for any [Iterator] over [Token]s
-impl<'a,T> TokenIterator<'a> for T
-where
-    T : Iterator<Item = Token<'a>>
-{ }
+impl<'a, T> TokenIterator<'a> for T where T: Iterator<Item = Token<'a>> {}
 
 /// TokenIt iterator implementation
 ///
 /// calls render on Placeholder, with other tokens passing through
-impl<'x,'y,X,Y,T,It> Iterator for TokenIt<'x,'y,X,Y,T,It>
+impl<'x, 'y, X, Y, T, It> Iterator for TokenIt<'x, 'y, X, Y, T, It>
 where
     //'y : 'x,
-    X : StringType,
-    Y : OptionalStr,
-    T : RenderPlaceholder<'x,'y,X,Y>,
-    It : TokenIterator<'x>
+    X: StringType,
+    Y: OptionalStr,
+    T: RenderPlaceholder<'x, 'y, X, Y>,
+    It: TokenIterator<'x>,
 {
     /// iterates over [Token]s
     type Item = Token<'y>;
     /// return/render next item (rendering item if its a [Placeholder](Token::Placeholder)
     fn next(&mut self) -> Option<Token<'y>> {
-        self.it.next().map(move |tok| self.r.render_placeholder(tok))
+        self.it
+            .next()
+            .map(move |tok| self.r.render_placeholder(tok))
     }
 }
 
@@ -606,17 +612,16 @@ where
 /// Implemented for HashMap reference so we can tie lifetimes together
 ///
 /// returns result of HashMap lookup (option with value reference)
-impl<'a,K,V> Render<K,Option<&'a V>> for &'a HashMap<&str,V>
+impl<'a, K, V> Render<K, Option<&'a V>> for &'a HashMap<&str, V>
 where
-    K : StringType+std::cmp::Eq+std::hash::Hash,
+    K: StringType + std::cmp::Eq + std::hash::Hash,
 {
     /// render hashmap key to hashmap value
     /// - returns [Option] from [HashMap::get]
-    fn render(&self, k : K) -> Option<&'a V> {
+    fn render(&self, k: K) -> Option<&'a V> {
         self.get(k.as_ref())
     }
 }
-
 
 /// parsing helpers for SimpleParser
 ///
@@ -628,16 +633,14 @@ impl<'a> SimpleParser<'a> {
     /// - e.g. `"hello {name}".parse_simple()`
     ///
     /// - `text` - string to parse
-    fn new(text : &'a str) -> Self {
-        Self {
-            text
-        }
+    fn new(text: &'a str) -> Self {
+        Self { text }
     }
 
     /// get next token slice
     ///  - `len` - byte length of chunk (or: byte index just after end of token)
-    fn chunk(&mut self,len : usize) -> &'a str {
-        let (ret,rest) = self.text.split_at(len);
+    fn chunk(&mut self, len: usize) -> &'a str {
+        let (ret, rest) = self.text.split_at(len);
         self.text = &rest;
         return ret;
     }
@@ -647,8 +650,8 @@ impl<'a> SimpleParser<'a> {
     ///  - `begin` - start of token (bytes up to there are dropped)
     ///  - `end` - byte index just after end of token
     ///  - `skip` - how many bytes to skip after splitting off chunk
-    fn chunk_skip(&mut self,begin : usize, end : usize, skip_after : usize) -> &'a str {
-        let (ret,rest) = self.text.split_at(end);
+    fn chunk_skip(&mut self, begin: usize, end: usize, skip_after: usize) -> &'a str {
+        let (ret, rest) = self.text.split_at(end);
         let ret = &ret[begin..];
         self.text = &rest[skip_after..];
         return ret;
@@ -664,7 +667,7 @@ impl<'a> SimpleParser<'a> {
     /// clear remainder string and return rest as one chunk (after skipping n bytes)
     ///
     /// - `n` - how many bytes to skip before returning rest
-    fn rest_skip(&mut self, n : usize) -> &'a str {
+    fn rest_skip(&mut self, n: usize) -> &'a str {
         let ret = &self.text[n..];
         self.text = &"";
         return ret;
@@ -687,7 +690,7 @@ impl<'a> Iterator for SimpleParser<'a> {
         //if there are >0 chars, first char determines token type, else we are done
         let c = match self.text.chars().next() {
             Some(c) => c,
-            None => return None
+            None => return None,
         };
 
         //
@@ -696,21 +699,23 @@ impl<'a> Iterator for SimpleParser<'a> {
         //
 
         use Token::*;
-        Some(if c == '{' { //at start of placeholder token
+        Some(if c == '{' {
+            //at start of placeholder token
             //look for end of placeholder
             match self.text.find('}') {
                 // closing brace found. return Placeholder (without braces)
-                Some(i) => Placeholder(self.chunk_skip(1,i,1)),
+                Some(i) => Placeholder(self.chunk_skip(1, i, 1)),
                 //Placeholder not terminated, so return Unterminated
-                None => Unterminated(self.rest_skip(1))
+                None => Unterminated(self.rest_skip(1)),
             }
-        } else { //at start of literal token
+        } else {
+            //at start of literal token
             //look for start of placeholder
             match self.text.find('{') {
                 //placeholder found, return the Literal up to it
                 Some(i) => Literal(self.chunk(i)),
                 //no placeholders found, so just return text as a Literal
-                None => Literal(self.rest())
+                None => Literal(self.rest()),
             }
         })
     }
@@ -722,26 +727,25 @@ impl<'a> Iterator for SimpleParser<'a> {
 /// - drops unresolved and unterminated placeholders
 ///
 /// Type parameters:
-/// - `T` - input string type (can be anything that derefs to &str
-/// - `U` - [Render] that implements [RenderPlaceholder] and returns `W`
-/// - `V` - output type must implement [FromIterator<Token>]
-/// - `W` - output from [Render] (must implement [OptionalStr])
+/// - `T` - input string type (something that derefs to &str)
+/// - `U` - [Render] that implements [`RenderPlaceholder`] and returns `W`
+/// - `V` - output type must implement [`FromIterator<Token>`]
+/// - `W` - output from [Render] (must implement [`OptionalStr`])
 ///
 /// Arguments:
 /// - `text` - string to parse and render
 /// - `render` - [RenderPlaceholder] called on each placeholder token
-pub fn render_str<'x,'y,X,Y,T,Z>(text : &'x str, render : T) -> Z
+pub fn render_str<'x, 'y, X, Y, T, Z>(text: &'x str, render: T) -> Z
 where
-    X : 'x+StringType,
-    Y : 'y+OptionalStr,
-    T : RenderPlaceholder<'x,'y,X,Y>,
-    Z : FromIterator<Token<'y>>
+    X: 'x + StringType,
+    Y: 'y + OptionalStr,
+    T: RenderPlaceholder<'x, 'y, X, Y>,
+    Z: FromIterator<Token<'y>>,
 {
     SimpleParser::new(text)
         .render_placeholders(render)
         .collect_display()
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -774,15 +778,15 @@ mod tests {
     /// test [render_str]
     fn test_render_str_impl() {
         struct Context {
-            name : &'static str
+            name: &'static str,
         }
 
         struct ContextRef {
-            name : String
+            name: String,
         }
 
-        impl Render<&str,Option<&'static str>> for Context {
-            fn render(&self, arg : &str) -> Option<&'static str> {
+        impl Render<&str, Option<&'static str>> for Context {
+            fn render(&self, arg: &str) -> Option<&'static str> {
                 if arg == "name" {
                     Some(self.name)
                 } else {
@@ -791,8 +795,8 @@ mod tests {
             }
         }
 
-        impl<'a> Render<&str,Option<&'a str>> for &'a ContextRef {
-            fn render(&self, arg : &str) -> Option<&'a str> {
+        impl<'a> Render<&str, Option<&'a str>> for &'a ContextRef {
+            fn render(&self, arg: &str) -> Option<&'a str> {
                 if arg == "name" {
                     Some(&self.name)
                 } else {
@@ -802,28 +806,28 @@ mod tests {
         }
 
         let template = "Hello {name}!";
-        let context = Context { name : "World" };
-        let rendered : String = render_str(&template, context);
+        let context = Context { name: "World" };
+        let rendered: String = render_str(&template, context);
 
-        assert_eq!( &rendered, "Hello World!" );
+        assert_eq!(&rendered, "Hello World!");
 
-        let context = ContextRef { name : "World".to_string() };
-        let rendered : String = render_str(&template, &context);
+        let context = ContextRef {
+            name: "World".to_string(),
+        };
+        let rendered: String = render_str(&template, &context);
 
-        assert_eq!( &rendered, "Hello World!" );
+        assert_eq!(&rendered, "Hello World!");
     }
 
     #[test]
     /// Test default [HashMap] render impl
     fn test_hashmap_placeholer_render() {
         let template = "Hello {name}!";
-        let context : HashMap<_,_> = [
-            ("name","World")
-        ].into_iter().collect();
+        let context: HashMap<_, _> = [("name", "World")].into_iter().collect();
 
-        assert_eq!( (&context).render("name"), Some(&"World") );
+        assert_eq!((&context).render("name"), Some(&"World"));
 
-        let rendered : String = render_str(&template, &context);
-        assert_eq!( &rendered, "Hello World!" );
+        let rendered: String = render_str(&template, &context);
+        assert_eq!(&rendered, "Hello World!");
     }
 }

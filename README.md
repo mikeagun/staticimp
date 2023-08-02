@@ -37,8 +37,7 @@ It doesn't (yet) support all the features of staticman, but I welcome pull reque
 - extra fields generated from config
 - has code to load/process field transformations (but doesn't have any implemented yet)
 - can send processed entries to gitlab/debug backends
-  - doesn't yet support moderated comments (commit to new branch and submit pull request),
-    but I am working on that next
+- moderated comments - commit to new branch and create merge request
 
 
 # Work In Progress
@@ -63,8 +62,7 @@ needed and there are some missing important features that I am still implementin
 
 # Requirements
 - authentication token for the GitLab instance hosting your content repo
-- rust
-  - I plan on mostly running this in docker, so it will also include a Dockerfile + docker compose soon for easy running/tests
+- docker (and/or a rust build environment)
 
 
 # Site Repo vs Comments Repo

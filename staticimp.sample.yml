@@ -1,5 +1,6 @@
 # host ip to listen on
-host: 127.0.0.1
+#host: 127.0.0.1
+host: 0.0.0.0
 # port to listen on
 port: 8080
 

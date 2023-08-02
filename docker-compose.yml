@@ -1,0 +1,16 @@
+version: "3.8"
+services:
+  staticimp:
+    #hostname: 'staticimp'
+    #container_name: 'staticimp'
+    build: .
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 100
+    read_only: true
+    volumes:
+      - ./staticimp.yml:/staticimp.yml:r
+    ports:
+      - "8080:8080"
+    environment:
+      gitlab_token: ${GITLAB_TOKEN}
