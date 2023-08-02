@@ -70,10 +70,12 @@ use gitlab::api::projects::repository::branches::CreateBranch;
 use gitlab::api::projects::repository::files::CreateFile;
 use gitlab::api::AsyncQuery;
 use markdown_table::MarkdownTable;
+use md5;
 use rendertemplate::render_str;
 use rendertemplate::Render;
 use serde::Deserialize;
 use serde::Serialize;
+use sha256;
 use slug::slugify;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -211,7 +213,17 @@ pub type ImpResult<R> = Result<R, ImpError>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct FieldTransform {
     field: String,
-    transform: String,
+    transform: FieldTransformType,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+enum FieldTransformType {
+    #[serde(rename = "slugify")]
+    Slugify,
+    #[serde(rename = "md5")]
+    Md5,
+    #[serde(rename = "sha256")]
+    Sha256,
 }
 
 /// Field to generate
@@ -746,13 +758,11 @@ impl NewEntry {
     {
         for t in transforms {
             if let Some(field) = self.entry.fields.get_mut(&t.field) {
-                if t.transform == "slugify" {
-                    *field = slugify(&field);
-                } else {
-                    return Err(ImpError::BadRequest(
-                        "",
-                        format!("Unknown field transform '{}'", t.transform).into(),
-                    ));
+                use FieldTransformType::*;
+                *field = match t.transform {
+                    Slugify => slugify(&field),
+                    Md5 => format!("{:x}", md5::compute(&field)),
+                    Sha256 => sha256::digest(field.as_str()),
                 }
             }
         }
