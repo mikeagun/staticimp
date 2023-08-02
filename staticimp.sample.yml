@@ -53,6 +53,9 @@ entries:
           value: "{@id}"
         date:
           value: "{@date:%+}"
+      #transforms:
+      #  - field: comment
+      #    transform: slugify
     review: false
     format: yml
     git:

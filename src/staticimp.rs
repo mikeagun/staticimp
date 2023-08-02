@@ -74,6 +74,7 @@ use rendertemplate::render_str;
 use rendertemplate::Render;
 use serde::Deserialize;
 use serde::Serialize;
+use slug::slugify;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -210,6 +211,7 @@ pub type ImpResult<R> = Result<R, ImpError>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct FieldTransform {
     field: String,
+    transform: String,
 }
 
 /// Field to generate
@@ -743,8 +745,15 @@ impl NewEntry {
         I: Iterator<Item = &'a FieldTransform>,
     {
         for t in transforms {
-            if let Some(_field) = self.entry.fields.get_mut(&t.field) {
-                todo!("Transform fields")
+            if let Some(field) = self.entry.fields.get_mut(&t.field) {
+                if t.transform == "slugify" {
+                    *field = slugify(&field);
+                } else {
+                    return Err(ImpError::BadRequest(
+                        "",
+                        format!("Unknown field transform '{}'", t.transform).into(),
+                    ));
+                }
             }
         }
         Ok(self)
@@ -997,9 +1006,14 @@ pub trait GitAPI {
         description: &str,
     ) -> ImpResult<()>;
     /// get git project information
-    async fn get_project(&self, id: &str) -> ImpResult<GitProject>;
+    ///
+    /// - `project` - git project id/path
+    async fn get_project(&self, project: &str) -> ImpResult<GitProject>;
+
     /// get information about a specific project branch
-    async fn get_branch(&self, id: &str, branch: &str) -> ImpResult<GitBranch>;
+    /// - `project` - git project id/path
+    /// - `branch` - git branch to look up
+    async fn get_branch(&self, project: &str, branch: &str) -> ImpResult<GitBranch>;
 
     /// Create file in a new branch and create merge request
     ///
