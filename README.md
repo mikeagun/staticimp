@@ -21,12 +21,13 @@ If you already use Node.js and/or have a webserver with plenty of RAM, Staticman
 
 While staticman is great, the memory consumption is a little heavy for running in stateless/serverless environments (e.g. [Google Cloud Run](https://cloud.google.com/run)) or on a tiny VPS.
 
-In my use and testing:
+
+In my use and testing staticman takes:
 - RAM Usage is around 70-110+MB RAM idling, and >120MB during startup, which makes it a little tight for a VPS with 128MB total.
-- startup takes 2-3 seconds
+- startup takes 2-3 seconds (from docker compose up to first HTTP response)
 - docker image is around 1.4GB (for pulling in all the dependencies), which isn't a big deal but does slow down docker pull / run
 
-_NOTE: none of the above may matter if you have a large webserver that is always running, has 100s of MB free memory, and lots of disk space,
+_NOTE: none of the above may matter if you have a large webserver that is always running, has 100s of MB free memory, and has lots of disk space,
 but might very much matter on a small VPS_
 
 While the above numbers could probably be reduced (maybe even significantly), Node isn't known for for being lightweight, so I wrote staticimp to solve the same static-site/dynamic-content problem with a much smaller footprint.
@@ -45,23 +46,24 @@ _\* the RAM/startup time numbers are based on informal benchmarking on my dev ma
 - can support multiple backends simultaneously
  - the supported backend drivers are compiled in, but you can set up multiple backends (e.g. gitlab1,gitlab2) with different configs
  - current backend drivers: gitlab, debug
-- configuration supports placeholders to pull config values from requests
-  - e.g. `{@id}` in entry config gets replaced with entry uid
-- loads server config from `staticman.yml`
-- project-specific config can be stored in project repo
-- entry validation checks for allowed/required fields
-- extra fields can be generated from config
-  - e.g. to add uid/timestamp to stored entry
-- can transform fields in config
-  - current transforms: slugify, md5, sha256
+- flexible configuration file support with both server config and project config
+  - supports placeholders to pull config values from requests
+    - e.g. `{@id}` in entry config gets replaced with entry uid
+  - loads server config from `staticman.yml`
+  - project-specific config can be stored in project repo
+  - entry validation checks for allowed/required fields
+  - generated fields
+    - e.g. to add uid/timestamp to stored entry
+  - field transforms
+    - current transforms: slugify, md5, sha256
 - moderated comments
-  - commits entries to new branch and creates merge request to accept comment
+  - commits entries to new branch and creates merge request instead of commiting directly to target branch
 
 
 # Work In Progress
 
 staticimp is a work-in-progress. The basic features are stable, but thorough test code is still
-needed and there are some missing important features that I am still implementing.
+needed and there are some important features that I am still implementing.
 
 **Features still to implement**
 - thorough test code
@@ -89,7 +91,11 @@ To build and run a docker container manually:
 cp staticimp.sample.yml staticimp.yml # edit per your setup
 
 sudo docker build -t staticimp:latest .
-sudo docker run -d --restart=always --name=staticimp --hostname=staticimp -p 8080:8080 -v "$(pwd)/staticimp.yml:/staticimp.yml:ro" -e gitlab_token=XXXXXX staticimp:latest
+sudo docker run -d --restart=always \
+  --name=staticimp --hostname=staticimp -p 8080:8080 \
+  -v "$(pwd)/staticimp.yml:/staticimp.yml:ro" \
+  -e gitlab_token=XXXXXX \
+  staticimp:latest
 ```
 
 ## cargo
@@ -128,7 +134,7 @@ printf 'GET / HTTP/1.1\r\nConnection: close\r\n\r\n' | nc -v -w3 127.0.0.1 8080
 ```bash
 #note that project id can be numeric or the full path to the project
 #using curl
-curl -H "Content-Type: application/json" -X POST --data '{"name":"Michael","email":"mikeagun@gmail.com","comment":"this is a test"}' '127.0.0.1:8080/v1/entry/debug/42/main/comment?slug=staticimp-test'
+curl -H "Content-Type: application/json" -X POST --data '{"name":"John Doe","email":"johndoe@example.com","comment":"this is a test"}' '127.0.0.1:8080/v1/entry/debug/42/main/comment?slug=staticimp-test'
 
 #using wget
 #NOTE: this fails with internal server error in current version on debug backend (I haven't debugged why yet)
@@ -183,7 +189,7 @@ This lets you merge/close the MR to accept/ignore the comment
 The main practical differences between running staticimp and staticman:
 - server/project config files
   - `staticimp.yml` for server, configurable for project (`staticimp.yml` is a good choice)
-  - the configuration options are similar, but the config format is different. see [staticimp.sample.yml]
+  - the configuration options are similar, but the config format is different. see [staticimp.sample.yml](staticimp.sample.yml)
 - entry submission URL
   - `/v1/entry/{backend}/{project:.*}/{branch}/{entry_type}`
 
