@@ -210,24 +210,49 @@ for well-commented examples to start with
 ### staticimp config Structure
 
 **Overall Structure:**
- - server settings - host/port
- - default settings - entry/backend defaults
+ - server settings - `host`/`port`
+ - global settings - `timestamp_format`
  - backend configurations
  - entry configurations
 
+- `host:` - host to listen on (default: `"127.0.0.1"`)
+- `port:` - port to listen on (default: `8080`)
+- `timestamp_format:` - `{@timestamp}` format (default: `"%Y%m%dT%H%M%S%.3fZ"`)
+- `backends:` - server backends
+  - _map of backends_
+- `entries:` - global entry configurations
+  - _map of global entries_
 
+**Example:**
 ```yaml
-# server network settings
-host: # host to listen on (default: "127.0.0.1")
-port: # port to listen on (default: 8080)
+# server settings
+host: "0.0.0.0" # host to listen on (default: "127.0.0.1")
+port: 8080 # port to listen on (default: 8080)
 
-timestamp_format: # "{@timestamp}" format (default: "%Y%m%dT%H%M%S%.3fZ")
+#verbose iso8601 (with microseconds)
+timestamp_format: "%+" # "{@timestamp}" format (default: "%Y%m%dT%H%M%S%.3fZ")
 
 backends:
-# ... backend configurations ...
+  gitlab:
+    project_config_path: "staticimp.yml"
+    driver: gitlab
+    host: git.example.com
+    #token=... #get from env
 
 entries:
-# ... global entry configurations ...
+  comment:` - entry type name (in this case `comment`)
+    fields:` - entry field processing configuration
+      allowed: [ "name", "email", "url", "message" ]
+      required: [ "name", "email","message: ]
+      extra:
+        _id: "{@id}"
+        date: "{@date:%+}"
+        email_md5: "{field.email}"
+      transforms:
+        - field: email_md5
+          transform: md5
+    git:
+      path: "data/comments"
 ```
 
 
@@ -236,28 +261,27 @@ entries:
 - contains backend configuration settings
 - there are shared settings and driver-specific settings
 
+`mybackend:` - backend name (in this case `mybackend`)
+- `project_config_path:` - project-specific config path (default: "")
+- `project_config_format:` - project-specific config path (default: yaml)
+- `driver:` - which backend driver to use for this backend (required)
+  - current options: gitlab, debug
+- **gitlab specific**
+- `host:` - hostname for gitlab server, with no leading https:// (required)
+  - **NOTE:** host and token can be overriden by the `<backend>_<var>` environment variables (e.g. `mybackend_token`)
+- `token:` - gitlab auth token, recommend to load from env var instead to keep out of repo (required)
+- **debug specific**
+  - _currently no debug options_
+
+**Example:**
 ```yaml
-# shared settings
-mybackend:
-  project_config_path: # project-specific config path (default: "")
-  project_config_format: # project-specific config path (default: yaml)
-
-  driver: # which backend driver to use for this backend (required)
-
-# gitlab specific
 gitlab:
+  project_config_path: "staticimp.yml"
+
   driver: gitlab
-
-  # NOTE: host and token can be overriden by the <backend>_<var> environment variables (e.g. gitlab_token)
-  host: # hostname for gitlab server (no leading https://)
-  #token: # gitlab auth token (recommend to load from env var to keep out of repo)
-
-# debug specific
-debug:
-  driver: debug
-  # no debug-specific settings yet
+  host: git.example.com
+  #token=... #get from env
 ```
-
 
 ### Entry Type Configuration
 
@@ -270,13 +294,13 @@ project conf entry types of the same name.
   - `required:` - required entry fields (default: `[ ]`)
   - `extra:` - _optional_
     - _... extra fields to generate ..._
-  - transforms: # _optional_
+  - transforms: - _optional_
     - _... transforms to apply ..._
-- `review:` - whether to moderate comments (default: false)
+- `review:` - whether to moderate comments (default: `false`)
   - if true, entries get created in a new review branch
-- `format:` - serialization format for entries (default: json)
+- `format:` - serialization format for entries (default: `json`)
 - `git:` - _optional_ - git specific entry configuration (these all support placeholders)
-  - `path:` # directory path to place entries in (default: "data/entries")
+  - `path:` - directory path to place entries in (default: `"data/entries"`)
   - `filename:` - entry file name (default: `"comment-{@timestamp}.yml"`)
   - `branch:` - branch to commit entries to (default: `"main"`)
     - if review enabled, commits entry to `review_branch` with MR to `branch`
@@ -285,38 +309,31 @@ project conf entry types of the same name.
   - `mr_description:` - merge request description
     - default: `"new staticimp entry awaiting approval\n\nMerge the pull request to accept it, or close it"`
  
-```
+**Example:**
+```yaml
 comment:
-  disabled: # whether this entry-type (comment) is disabled (default: false)
-
   fields:
-    # entry field processing configuration
-
-    allowed: # allowed entry fields (default: [ ])
-    required: # required entry fields (default: [ ])
-    extra: # (optional)
-      # ... extra fields to generate ...
-    transforms: # (optional)
-      # ... transforms to apply ...
-
-  review: # whether moderation is enabled (send entry for review) (default: false)
-
-  format: # entry output serialization format (default: json)
-
+    #allowed: [ "name", "email", "url", "message" ]
+    allowed: ["name", "email", "website", "comment", "replyThread", "replyName", "replyID"]
+    required: ["name", "email", "comment"]
+    extra:
+      _id: #add comment uid as '_id' field
+        value: "{@id}"
+      date: #add entry timestamp (verbose ISO8601)
+        #for format syntax see: https://docs.rs/chrono/latest/chrono/format/strftime/index.html
+        value: "{@date:%+}"
+    transforms:
+      - field: email
+        transform: md5
+  #review: false
+  #format: yaml
   git:
-    # git specific entry config (optional)
-
-    path: # directory path to place entries in (default: "data/entries")
-
-    filename: # entry filename (default: "comment-{@timestamp}.yml")
-
-    branch: # branch to send entries to (default: "main")
-
-    commit_message: # entry commit message (default: "New staticimp entry")
-
-    review_branch: # entry review branch name (default: "staticimp_{@id}")
-
-    mr_description: # merge request description (default: "new staticimp entry awaiting approval\n\nMerge the pull request to accept it, or close it")
+    path: "data/comments/{params.slug}" #default: "data/comments"
+    #filename: "comment-{@timestamp}.yml"
+    #branch: main
+    #commit_message: "New staticimp entry"
+    #review_branch: "staticimp_{@id}"
+    #mr_description: "new staticimp entry awaiting approval\n\nMerge the pull request to accept it, or close it to deny the entry"
 ```
 
 ### Extra Fields
@@ -324,22 +341,22 @@ comment:
 - `extra:` fields are generated after `allowed`/`required` validation
 - field transformations are applied after extra fields are generated
 
+**Example:**
 ```yaml
+- field: email
+  transform: md5
 ```
 
 ### Field Transformations
 
 - `transforms:` are applied after `extra:` fields are generated
 
+**Example:**
+- add entry uid and verbose iso8601 timestamp
 ```yaml
+_id: "{@id}"
+date: "{@date:%+}"
 ```
-
-
-# Examples
-
-See staticimp.sample.yml for a basic example, more to be added here ...
-
-set `project_config_path: "staticimp.yml"` in config to keep staticimp project config in repo as "staticimp.yml"
 
 
 ## Links
