@@ -20,16 +20,23 @@ staticimp was inspired by the awesome project [Staticman](https://github.com/edu
 If you already use Node.js and/or have a webserver with plenty of RAM, Staticman is a great tool and you should check it out.
 
 While staticman is great, the memory consumption is a little heavy for running in stateless/serverless environments (e.g. [Google Cloud Run](https://cloud.google.com/run)) or on a tiny VPS.
-In my use and testing it takes around 70-110+MB RAM idling, and >120MB during startup (which takes 2-3 seconds), which makes it a little tight for a VPS with 128MB total.
-While that could probably be reduced some, Node isn't known for for being lightweight on RAM usage.
-In addition, the docker image is around 1.4GB (for pulling in all the dependencies), which isn't a big deal but does slow down docker pull / run
+
+In my use and testing:
+- RAM Usage is around 70-110+MB RAM idling, and >120MB during startup, which makes it a little tight for a VPS with 128MB total.
+- startup takes 2-3 seconds
+- docker image is around 1.4GB (for pulling in all the dependencies), which isn't a big deal but does slow down docker pull / run
+
+_NOTE: none of the above may matter if you have a large webserver that is always running, has 100s of MB free memory, and lots of disk space,
+but might very much matter on a small VPS_
+
+While the above numbers could probably be reduced (maybe even significantly), Node isn't known for for being lightweight, so I wrote staticimp to solve the same static-site/dynamic-content problem with a much smaller footprint.
 
 
 # Resources
-staticimp is a lightweight solution to the static-site-dynamic-content problem:
-- small docker image (under 30MB)
+staticimp is a lightweight solution to the static-site/dynamic-content problem:
 - relatively low RAM usage (4-8MB)_\*_
 - startup is fast (10-40ms to first HTTP response, 400ms including docker run on my machine)_\*_
+- small docker image (under 30MB)
 
 _\* the RAM/startup time numbers are based on informal benchmarking on my dev machine_
 
@@ -39,7 +46,7 @@ _\* the RAM/startup time numbers are based on informal benchmarking on my dev ma
  - the supported backend drivers are compiled in, but you can set up multiple backends (e.g. gitlab1,gitlab2) with different configs
  - current backend drivers: gitlab, debug
 - configuration supports placeholders to pull config values from requests
-  - e.g. `{$@id}` in entry config gets replaced with entry uid
+  - e.g. `{@id}` in entry config gets replaced with entry uid
 - loads server config from `staticman.yml`
 - project-specific config can be stored in project repo
 - entry validation checks for allowed/required fields
@@ -77,12 +84,12 @@ cp staticimp.sample.yml staticimp.yml #edit per your setup
 sudo docker compose up -d
 ```
 
-To build and run docker container manually:
+To build and run a docker container manually:
 ```bash
 cp staticimp.sample.yml staticimp.yml # edit per your setup
 
 sudo docker build -t staticimp:latest .
-sudo docker run -d --restart=always --name=staticimp --hostname=staticimp -p 8080:8080 -v "$(pwd)/staticimp.yml:/staticimp.yml:ro" staticimp:latest
+sudo docker run -d --restart=always --name=staticimp --hostname=staticimp -p 8080:8080 -v "$(pwd)/staticimp.yml:/staticimp.yml:ro" -e gitlab_token=XXXXXX staticimp:latest
 ```
 
 ## cargo
