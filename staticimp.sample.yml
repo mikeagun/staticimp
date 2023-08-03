@@ -1,16 +1,21 @@
-# host ip to listen on
-#host: 127.0.0.1
-host: 0.0.0.0
-# port to listen on
-port: 8080
+# sample staticimp.yml server configuration file
 
-# specify timestamp format (current default is compact iso8601 with milliseconds)
+# host to listen on (default: "127.0.0.1")
+host: 0.0.0.0
+# port to listen on (default: 8080)
+#port: 8080
+
+# format of "{@timestamp}" (default: "%Y%m%dT%H%M%S%.3fZ")
 #timestamp_format: "%Y%m%dT%H%M%S%.3fZ"
 
 # configured backends
 # key - backend name (can be whatever you want)
 # driver - type of backend (currently support gitlab and debug)
 backends:
+  # path to project conf file, or empty string for server conf only (default: "")
+  #project_config_path: "staticimp.yml"
+  # serialization format for project config (default: yaml)
+  #project_config_format: yaml
   #debug:
   #  driver: debug
   gitlab:
@@ -24,25 +29,19 @@ backends:
     #  - NOTE: the env var is backend-specific, so if you call your backend mygitlab, it would be mygitlab_token
     #token=...
 
-
-# if project_config_path is set, staticimp looks for a project-specific config file at that path
-# - not implemented yet though
-#project_config_path: "staticimp.yml"
-
-
 # configured entry types
-# key - entry type (can be whatever you want)
-# fields - configuration for processing entry fields
-# review - whether to moderate comments
+# `key:` - entry type (can be whatever you want)
+# `key.fields:` - configuration for processing entry fields
+# `key.review:` - whether to moderate comments
 #   - if true, entries get created in 
-# format - serialization format for entries
-# git - git specific entry configuration
+# `key.format:` - serialization format for entries
+# `key.git:` - git specific entry configuration
 #   - all the git config parameters support placeholders
-#   path - path of directory to store entries in
-#   filename - name of entry file
-#   branch - branch to commit entries to
+#   `path:` - path of directory to store entries in
+#   `filename:` - name of entry file
+#   `branch:` - branch to commit entries to
 #     - if review enabled, commits entry to new branch and submits MR to target branch
-#   commit_message - commit message to use
+#   `commit_message:` - commit message to use
 entries: 
   comment:
     fields:
@@ -59,7 +58,7 @@ entries:
         - field: email
           transform: md5
     #review: false
-    #format: yml
+    #format: yaml
     git:
       path: "data/comments/{params.slug}" #default: "data/comments"
       #filename: "comment-{@timestamp}.yml"

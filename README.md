@@ -196,6 +196,144 @@ The main practical differences between running staticimp and staticman:
 
 # Setting up Hugo
 
+**TO BE WRITTEN**
+
+# Configuration
+
+The staticimp server configration file is "staticimp.yml"
+
+The project configuration format is exactly the same as server config, except that only the `entries:` are used.
+
+See the sample [server configuration](staticimp.sample.yml) and [project configuration](staticimp.project.yml) files
+for well-commented examples to start with
+
+### staticimp config Structure
+
+**Overall Structure:**
+ - server settings - host/port
+ - default settings - entry/backend defaults
+ - backend configurations
+ - entry configurations
+
+
+```yaml
+# server network settings
+host: # host to listen on (default: "127.0.0.1")
+port: # port to listen on (default: 8080)
+
+timestamp_format: # "{@timestamp}" format (default: "%Y%m%dT%H%M%S%.3fZ")
+
+backends:
+# ... backend configurations ...
+
+entries:
+# ... global entry configurations ...
+```
+
+
+### Backend Configuration
+
+- contains backend configuration settings
+- there are shared settings and driver-specific settings
+
+```yaml
+# shared settings
+mybackend:
+  project_config_path: # project-specific config path (default: "")
+  project_config_format: # project-specific config path (default: yaml)
+
+  driver: # which backend driver to use for this backend (required)
+
+# gitlab specific
+gitlab:
+  driver: gitlab
+
+  # NOTE: host and token can be overriden by the <backend>_<var> environment variables (e.g. gitlab_token)
+  host: # hostname for gitlab server (no leading https://)
+  #token: # gitlab auth token (recommend to load from env var to keep out of repo)
+
+# debug specific
+debug:
+  driver: debug
+  # no debug-specific settings yet
+```
+
+
+### Entry Type Configuration
+
+contains default entry types to support. entry types in the server conf are overriden by
+project conf entry types of the same name.
+
+`comment:` - entry type name (in this case `comment`)
+- `fields:` - entry field processing configuration
+  - `allowed:` - allowed entry fields (default: `[ ]`)
+  - `required:` - required entry fields (default: `[ ]`)
+  - `extra:` - _optional_
+    - _... extra fields to generate ..._
+  - transforms: # _optional_
+    - _... transforms to apply ..._
+- `review:` - whether to moderate comments (default: false)
+  - if true, entries get created in a new review branch
+- `format:` - serialization format for entries (default: json)
+- `git:` - _optional_ - git specific entry configuration (these all support placeholders)
+  - `path:` # directory path to place entries in (default: "data/entries")
+  - `filename:` - entry file name (default: `"comment-{@timestamp}.yml"`)
+  - `branch:` - branch to commit entries to (default: `"main"`)
+    - if review enabled, commits entry to `review_branch` with MR to `branch`
+  - `commit_message:` - entry commit message (default: `"New staticimp entry"`)
+  - `review_branch:` - entry review branch name (default: `"staticimp_{@id}"`)
+  - `mr_description:` - merge request description
+    - default: `"new staticimp entry awaiting approval\n\nMerge the pull request to accept it, or close it"`
+ 
+```
+comment:
+  disabled: # whether this entry-type (comment) is disabled (default: false)
+
+  fields:
+    # entry field processing configuration
+
+    allowed: # allowed entry fields (default: [ ])
+    required: # required entry fields (default: [ ])
+    extra: # (optional)
+      # ... extra fields to generate ...
+    transforms: # (optional)
+      # ... transforms to apply ...
+
+  review: # whether moderation is enabled (send entry for review) (default: false)
+
+  format: # entry output serialization format (default: json)
+
+  git:
+    # git specific entry config (optional)
+
+    path: # directory path to place entries in (default: "data/entries")
+
+    filename: # entry filename (default: "comment-{@timestamp}.yml")
+
+    branch: # branch to send entries to (default: "main")
+
+    commit_message: # entry commit message (default: "New staticimp entry")
+
+    review_branch: # entry review branch name (default: "staticimp_{@id}")
+
+    mr_description: # merge request description (default: "new staticimp entry awaiting approval\n\nMerge the pull request to accept it, or close it")
+```
+
+### Extra Fields
+
+- `extra:` fields are generated after `allowed`/`required` validation
+- field transformations are applied after extra fields are generated
+
+```yaml
+```
+
+### Field Transformations
+
+- `transforms:` are applied after `extra:` fields are generated
+
+```yaml
+```
+
 
 # Examples
 
