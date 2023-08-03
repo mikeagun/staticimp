@@ -46,7 +46,8 @@ _\* the RAM/startup time numbers are based on informal benchmarking on my dev ma
 - can support multiple backends simultaneously
  - the supported backend drivers are compiled in, but you can set up multiple backends (e.g. gitlab1,gitlab2) with different configs
  - current backend drivers: gitlab, debug
-- flexible configuration file support with both server config and project config
+- flexible configuration support with both server config and project config
+  - can take sensitive configuration values (e.g. gitlab token) from environment variables
   - supports placeholders to pull config values from requests
     - e.g. `{@id}` in entry config gets replaced with entry uid
   - loads server config from `staticman.yml`
@@ -109,7 +110,7 @@ cp staticimp.sample.yml staticimp.yml # edit per your setup
 gitlab_token=XXXXXXXXXX cargo run --release
 # -- OR --
 cargo build --release
-gitlab_token=XXXXXXXXXX /target/release/staticimp
+gitlab_token=XXXXXXXXXX target/release/staticimp
 ```
 
 # Testing staticimp
