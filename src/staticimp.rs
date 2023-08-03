@@ -31,11 +31,6 @@
 //!
 //! **Features still to implement**
 //! - thorough test code
-//! - create and cache clients per-thread (rather than creating a new client for each request)
-//! - load project/branch-specific config files
-//!   - right now just loads the global conf at startup
-//! - implement field transformations
-//! - more documentation
 //! - logging
 //! - spam protection (probably reCAPTCHA)
 //! - github as a second backend
@@ -92,7 +87,6 @@ type BoxError = Box<dyn std::error::Error>;
 /// Implements [actix_web::ResponseError] so it can be returned directly from actix request handler
 #[derive(Debug)]
 pub enum ImpError {
-    //TODO: don't just Box everything
     /// BadRequest with message and child error
     BadRequest(&'static str, BoxError),
     /// InternalServerError with message and child error
@@ -820,17 +814,19 @@ impl NewEntry {
 /// renders entry processing placeholders to a [Cow]
 ///
 /// returns [Cow::Borrowed] for everything but formatted dates
-/// timestamp is prerendered,
+/// - `{@timestamp}` is prerenderedon entry creation
+///
+/// missing placeholders are collapsed (render to empty string)
 impl<'a> Render<&str, Option<Cow<'a, str>>> for &'a NewEntry {
     /// renders a Entry field or config value for a NewEntry
     ///
     /// return value is `Option<Cow>`
     /// - borrowed from entry for most placeholders
     /// - owned for formatted dates
+    /// - returns empty string for unknown placeholders
     ///
     /// - `placeholder` - the placeholder to render
     fn render(&self, placeholder: &str) -> Option<Cow<'a, str>> {
-        //TODO: should we return empty string or placeholder name on no match?
         if placeholder.starts_with('@') {
             //special generated vars
             //self.special.get(placeholder).map_or(&"",|v| &v)
@@ -891,7 +887,9 @@ impl Render<NewEntry, ImpResult<GitEntry>> for EntryConfig {
                 let branch = render_str(&gitconf.branch, &entry);
                 let commit_message = render_str(&gitconf.commit_message, &entry);
 
+                //if review is set, 
                 let (review_branch, mr_description) = if self.review {
+                    // create markdown table with entry fields for mr description (to make review easier)
                     let entry_table = MarkdownTable::new(
                         entry
                             .entry
@@ -912,11 +910,13 @@ impl Render<NewEntry, ImpResult<GitEntry>> for EntryConfig {
                         ))
                     })?;
 
+                    //get conf mr_description
                     let mr_description: String = render_str(&gitconf.mr_description, &entry);
+                    //append entry table to mr_description
                     let mr_description = format!("{}\n\n{}", mr_description, entry_table);
                     (
                         Some(render_str(&gitconf.review_branch, &entry)),
-                        Some(render_str(&mr_description, &entry)),
+                        Some(mr_description),
                     )
                 } else {
                     (None, None)
@@ -930,7 +930,6 @@ impl Render<NewEntry, ImpResult<GitEntry>> for EntryConfig {
                 Ok(GitEntry {
                     project_id,
                     branch,
-                    //FIXME: build proper path (e.g. strip dup '/')
                     file_path,
                     entry,
                     commit_message,
@@ -1260,226 +1259,32 @@ impl GitAPI for GitlabAPI {
 
     /// get project information
     ///
-    /// **TODO:** there is old commented code below for doing this, needs to be migrated here
-    async fn get_project(&self, _id: &str) -> ImpResult<GitProject> {
-        todo!("get_project")
+    /// - see [Gitlab Projects API](https://docs.gitlab.com/ee/api/projects.html) for other
+    ///   response fields that could be collected
+    async fn get_project(&self, project: &str) -> ImpResult<GitProject> {
+        let endpoint = gitlab::api::projects::Project::builder()
+            .project(project)
+            .build()
+            .or_internal_error("Bad project spec")?;
+        endpoint
+            .query_async(&self.client)
+            .await
+            .or_bad_request("Gitlab get_project failed")
     }
 
     /// get branch information
     ///
-    /// **TODO:** there is old commented code below for doing this, needs to be migrated here
-    async fn get_branch(&self, _id: &str, _branch: &str) -> ImpResult<GitBranch> {
-        todo!("get_branch")
+    /// - see [Gitlab Branches API](https://docs.gitlab.com/ee/api/branches.html) for other
+    ///   response fields that could be collected
+    async fn get_branch(&self, project: &str, branch: &str) -> ImpResult<GitBranch> {
+        let endpoint = gitlab::api::projects::repository::branches::Branch::builder()
+            .project(project)
+            .branch(branch)
+            .build()
+            .or_internal_error("Bad branch spec")?;
+        endpoint
+            .query_async(&self.client)
+            .await
+            .or_bad_request("Gitlab get_branch failed")
     }
 }
-
-//struct _Handlers {
-//}
-//impl _Handlers {
-//    fn new_entry(config : &Config, entry_type : &str, backend : &str, entry : Entry) -> ImpResult<()> {
-
-//        if let (Some(_backend),Some(conf)) = (
-//            config.backends.get(backend),
-//            config.entry_types.get(entry_type)
-//        ) {
-//            let _entry = entry.finalize(&conf.fields)?;
-//            //backend.new_entry(entry)
-//            todo!("Not Implemented")
-//        } else {
-//            Err("Unknown backend or type".into())
-//        }
-//    }
-//}
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-//#[async_trait::async_trait(?Send)]
-//trait _Backend {
-//    async fn new_entry<T>(&self) -> T where T:NewEntry;
-//}
-
-////Backend - backend api trait for staticimp
-//// - each backend api should implement this interface
-//// - TODO: implement higher-level helper functions (e.g. commit file to new branch and create MR)
-//// - TODO: instead of returning HttpResponse for the client, return the appropriate data
-////   - then calling function can use the data
-//// - TODO: refactor into BackendAPI and GitAPI (which implements BackendAPI)
-////   - then we have the flexibility to support non-git backends in the future (e.g. database or web service)
-//#[async_trait::async_trait(?Send)]
-//trait _BackendAPI {
-//    async fn add_file(&self, client: &awc::Client, id: &str, path: &str) -> ImpResult<actix_web::HttpResponse>;
-//    async fn get_file(&self, client: &awc::Client, id: &str, path: &str) -> ImpResult<actix_web::HttpResponse>;
-//    //async fn get_file(&self, id: &str, path: &str) -> ImpResult<bytes::Bytes>;
-//    async fn get_project(&self, client: &awc::Client, id: &str) -> ImpResult<actix_web::HttpResponse>;
-//    async fn get_branch(&self, client: &awc::Client, id: &str, branch: &str) -> ImpResult<actix_web::HttpResponse>;
-//}
-
-//#[async_trait::async_trait(?Send)]
-//impl BackendAPI for Config {
-//    async fn add_file(&self, client: &awc::Client, id: &str, path: &str) -> ImpResult<actix_web::HttpResponse> {
-//        self.backend.add_file(client,id,path).await
-//    }
-//    async fn get_file(&self, client: &awc::Client, id: &str, path: &str) -> ImpResult<actix_web::HttpResponse> {
-//        self.backend.get_file(client,id,path).await
-//    }
-//    async fn get_project(&self, client: &awc::Client, id: &str) -> ImpResult<actix_web::HttpResponse> {
-//        self.backend.get_project(client,id).await
-//    }
-//    async fn get_branch(&self, client: &awc::Client, id: &str, branch: &str) -> ImpResult<actix_web::HttpResponse> {
-//        self.backend.get_branch(client,id,branch).await
-//    }
-//}
-
-////Backend - enum for backend apis
-////  - variants are the supported backend apis
-////  - BackendAPI implementation just passes through to the current variant
-//#[derive(Clone,Debug, Serialize, Deserialize)]
-//#[serde(tag = "driver")]
-//enum Backend {
-//    Gitlab(GitlabAPI)
-//}
-
-////TODO: map/list of Backends in Config (also implement proper serialization/deserialization ignoring client)
-//#[async_trait::async_trait(?Send)]
-//impl BackendAPI for Backend {
-//    async fn add_file(&self, client: &awc::Client, id: &str, path: &str) -> ImpResult<actix_web::HttpResponse> {
-//        match self {
-//            Backend::Gitlab(backend) => backend.add_file(client,id,path).await
-//        }
-//    }
-//    async fn get_file(&self, client: &awc::Client, id: &str, path: &str) -> ImpResult<actix_web::HttpResponse> {
-//        match self {
-//            Backend::Gitlab(backend) => backend.get_file(client,id,path).await
-//        }
-//    }
-//    async fn get_project(&self, client: &awc::Client, id: &str) -> ImpResult<actix_web::HttpResponse> {
-//        match self {
-//            Backend::Gitlab(backend) => backend.get_project(client,id).await
-//        }
-//    }
-//    async fn get_branch(&self, client: &awc::Client, id: &str, branch: &str) -> ImpResult<actix_web::HttpResponse> {
-//        match self {
-//            Backend::Gitlab(backend) => backend.get_branch(client,id,branch).await
-//        }
-//    }
-//}
-
-////GitlabAPI - implementation of the Gitlab REST api
-////  - TODO: support oauth
-////  - TODO: return appropriate data instead of client response (see BackendAPI)
-//#[derive(Clone,Debug, Serialize, Deserialize)]
-//struct _GitlabAPI {
-//    host: String,
-//    #[serde(default)]
-//    token: String,
-//}
-
-////impl Clone for GitlabAPI {
-////    fn clone(&self) -> Self {
-////        GitL
-////    }
-////}
-
-//impl GitlabAPI {
-//    //pub fn new() -> Self {
-//    //}
-//}
-
-////TODO: don't send full gitlab response (or have debug flag to enable)
-////  - normally should send back higher level error
-//#[async_trait::async_trait(?Send)]
-//impl _BackendAPI for _GitlabAPI {
-//    async fn add_file(&self, _client: &awc::Client, id: &str, path: &str) -> ImpResult<actix_web::HttpResponse> {
-//        let client = gitlab::GitlabBuilder::new(self.host.as_str(),self.token.as_str()).build_async().await?;
-//        let branch = "main";
-//        let content : &[u8] = b"This is a test file\nand a second line";
-//        let commit_message = "test create file from rust";
-//        let endpoint = gitlab::api::projects::repository::files::CreateFile::builder()
-//            .project(id)
-//            .branch(branch)
-//            .file_path(path)
-//            .content(content)
-//            .commit_message(commit_message).build()?;
-
-//        //// Now we send the Query.
-//        //endpoint.query_async(&client).await?;
-//        //Ok(actix_web::HttpResponse::Ok().finish())
-
-//        //FIXME: test code -- so we can see the raw format
-//        let response : Vec<u8> = gitlab::api::raw(endpoint).query_async(&client).await?;
-//        Ok(actix_web::HttpResponse::Ok().body(response))
-
-//        //match result.status() {
-//        //    awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
-//        //    _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
-//        //}
-//    }
-//    async fn get_file(&self, _client: &awc::Client, id: &str, path: &str) -> ImpResult<actix_web::HttpResponse> {
-//        let ref_ = "main";
-//        let client = gitlab::GitlabBuilder::new(self.host.as_str(),self.token.as_str()).build_async().await?;
-//        let endpoint = gitlab::api::projects::repository::files::FileRaw::builder()
-//            .project(id)
-//            .file_path(path)
-//            .ref_(ref_).build()?;
-//        let file : Vec<u8> = gitlab::api::raw(endpoint).query_async(&client).await?;
-//
-//        Ok(actix_web::HttpResponse::Ok().body(file))
-//        //match result.status() {
-//        //    awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
-//        //    _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
-//        //}
-//    }
-//    async fn get_project(&self, _client: &awc::Client, id: &str) -> ImpResult<actix_web::HttpResponse> {
-//        let client = gitlab::GitlabBuilder::new(self.host.as_str(),self.token.as_str()).build_async().await?;
-//        let endpoint = gitlab::api::projects::Project::builder()
-//            .project(id).build()?;
-//        let p : GitProject = endpoint.query_async(&client).await?;
-//        let json = serde_json::to_string_pretty(&p)?;
-//        Ok(actix_web::HttpResponse::Ok().body(json))
-//        //match result.status() {
-//        //    awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
-//        //    _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
-//        //}
-//    }
-//    async fn get_branch(&self, _client: &awc::Client, id: &str, branch: &str) -> ImpResult<actix_web::HttpResponse> {
-//        let client = gitlab::GitlabBuilder::new(self.host.as_str(),self.token.as_str()).build_async().await?;
-//        let endpoint = gitlab::api::projects::repository::branches::Branch::builder()
-//            .project(id)
-//            .branch(branch).build()?;
-//        let b : GitBranch = endpoint.query_async(&client).await?;
-//        let json = serde_json::to_string_pretty(&b)?;
-//        Ok(actix_web::HttpResponse::Ok().body(json))
-//        //match result.status() {
-//        //    awc::http::StatusCode::OK => Ok(actix_web::HttpResponse::Ok().body(rbody)),
-//        //    _ => Ok(actix_web::HttpResponseBuilder::new(result.status()).body(rbody))
-//        //}
-//    }
-//}
-
-////#[derive(Debug, derive_more::Display, derive_more::Error)]
-////enum CommentError {
-////    #[display(fmt = "Bad comment request format")]
-////    BadRequest,
-////}
-////impl actix_web::ResponseError for CommentError {
-////    fn error_response(&self) -> actix_web::HttpResponse {
-////	actix_web::HttpResponse::build(self.status_code())
-////	    .insert_header(actix_web::http::header::ContentType::html())
-////	    .body(self.to_string())
-////    }
-////
-////    fn status_code(&self) -> actix_web::http::StatusCode {
-////	match *self {
-////	    CommentError::BadRequest => actix_web::http::StatusCode::BAD_REQUEST,
-////	}
-////    }
-////}
-
-////Comment - struct for holding a comment
-//// - TODO: make this generic, so that fields can be customized at config level
-//#[derive(Serialize,Deserialize)]
-//pub struct Comment {
-//    name: String,
-//    //email: String,
-//    message: String
-//}

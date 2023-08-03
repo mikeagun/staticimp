@@ -1719,6 +1719,7 @@ dependencies = [
  "markdown-table",
  "md5",
  "openssl",
+ "parking_lot",
  "regex",
  "serde",
  "serde_json",

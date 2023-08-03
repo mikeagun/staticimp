@@ -4,6 +4,7 @@ services:
     #hostname: 'staticimp'
     #container_name: 'staticimp'
     build: .
+    restart: ${RESTART_POLICY}
     security_opt:
       - no-new-privileges:true
     pids_limit: 100

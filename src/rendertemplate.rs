@@ -43,11 +43,11 @@
 //!
 //!
 //!
-//! TODO:
-//!   - implement derive macro(s)
-//!   - implement support for Result/Error
-//!   - consider streaming iterators
-//!   - consider escapes for parser (Token::Escape)
+//! **Features To Implement**:
+//! - implement derive macro(s)
+//! - implement support for Result/Error
+//! - consider streaming iterators
+//! - consider escapes for parser (Token::Escape)
 //!
 //!
 //! # Examples
@@ -107,13 +107,12 @@ use std::{borrow::Cow, collections::HashMap, ops::Deref};
 //use std::fmt::Display;
 use std::marker::PhantomData;
 
-//TODO: support rendertemplate::Error (see note below on Result)
 ///// rendertemplate module error
 //pub enum Error {
 //    BadParse(&'static str),
 //}
 
-//TODO: implement traits/functions returning Result
+//TODO: implement traits/functions returning Result (also see Error above)
 ///// rendertemplate [Result]
 //type Result<T> = core::result::Result<T,Error>;
 
