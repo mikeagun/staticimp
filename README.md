@@ -133,7 +133,7 @@ Below are some useful oneliners for testing if staticimp is up and working.
 
 the examples using `curl` are probably the ones you want, but there are also `wget` and `nc` (netcat) examples.
 
-### test reachability
+### Test reachability
 ```bash
 #using curl
 curl 127.0.0.1:8080/
@@ -145,7 +145,10 @@ wget -q -S -O - localhost:8080/ || { echo "connection failed"; }
 printf 'GET / HTTP/1.1\r\nConnection: close\r\n\r\n' | nc -v -w3 127.0.0.1 8080
 ```
 
-### add a new entry
+### Add a new entry
+
+- **NOTE:** for testing you may want to set `debug: true` on the entry type
+
 ```bash
 #note that project id can be numeric or the full path to the project
 #using curl
@@ -310,8 +313,9 @@ contains default entry types to support. entry types in the server conf are over
 project conf entry types of the same name.
 
 `comment:` - entry type name (in this case `comment`)
+- `disabled:` - disables entry type (default: `false`)
 - `debug:` - return entry debugging info instead of commiting new entry (default: `false`)
-  - if `true` goes through all entry processing, then returns config and entry detailes instead of sending via backend client
+  - with `debug: true`, staticimp does all entry processing, then returns config and entry details instead of sending via backend client
 - `fields:` - entry field processing configuration
   - `allowed:` - allowed entry fields (default: `[ ]`)
   - `required:` - required entry fields (default: `[ ]`)
@@ -320,13 +324,13 @@ project conf entry types of the same name.
   - transforms:
     - _... transforms to apply ..._
 - `review:` - whether to moderate comments (default: `false`)
-  - if `true`, entries get created in a new review branch
+  - with `review: true`, entries get created in a new review branch
 - `format:` - serialization format for entries (default: `json`)
 - `git:` - _optional_ - git specific entry configuration (these all support placeholders)
   - `path:` - directory path to place entries in (default: `"data/entries"`)
   - `filename:` - entry file name (default: `"comment-{@timestamp}.yml"`)
   - `branch:` - branch to commit entries to (default: `"main"`)
-    - if review enabled, commits entry to `review_branch` with MR to `branch`
+    - if `review: true`, commits entry to `review_branch` with MR to `branch`
   - `commit_message:` - entry commit message (default: `"New staticimp entry"`)
   - `review_branch:` - entry review branch name (default: `"staticimp_{@id}"`)
   - `mr_description:` - merge request description
