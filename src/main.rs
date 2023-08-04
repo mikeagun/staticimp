@@ -19,22 +19,22 @@ mod staticimp;
 use actix_web::web;
 use actix_web::web::Data;
 use actix_web::FromRequest;
+use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
 use staticimp::*;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::io;
 use std::sync::Arc;
-use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
 //use actix_web::web::Header;
 use actix_web::http::header;
 use actix_web::http::header::ContentType;
 
+///
 type ConfigData = Data<Arc<Config>>;
-// cached backends -- since these are thread-specific, we don't technically need RwLock+Mutex
-// - just a Box around the HashMap could be enough
-// - there is probably a smarter way to do this, but for now I use RwLock to be able to update the
-//   map, and Mutex so we can drop to a readlock on the map and lock on the mutex
+/// cached backend map for actix handlers
+///
+/// Threadsafe, even though it is currently only used for per-worker backends
 type BackendsData = Data<RwLock<HashMap<String, Mutex<Backend>>>>;
-
 
 #[actix_web::get("/")]
 async fn index() -> impl actix_web::Responder {
@@ -47,11 +47,11 @@ async fn index() -> impl actix_web::Responder {
 
 /// Handle POST to create new entry -- this is the main handler for staticimp
 ///
-/// takes backend,project,branch, and entry type from path
 ///
-/// entry fields taken from request body (based on ContentType)
-///
-/// params taken from request query parameters
+/// Arguments:
+/// - takes backend,project,branch, and entry type from path
+/// - entry fields taken from request body (based on ContentType)
+/// - params taken from request query parameters
 #[actix_web::post("/v1/entry/{backend}/{project:.*}/{branch}/{entry_type}")]
 async fn post_comment_handler(
     cfg: ConfigData,
@@ -82,7 +82,7 @@ async fn post_comment_handler(
     // - json
     // - yaml (using application/yaml content-type)
     let entry_fields = if content_type == ContentType::form_url_encoded() {
-        web::Form::<Entry>::from_request(&req, &mut body)
+        web::Form::<EntryFields>::from_request(&req, &mut body)
             .await
             .or_bad_request("Bad Form entry")?
             .into_inner()
@@ -95,11 +95,15 @@ async fn post_comment_handler(
         let body = web::Bytes::from_request(&req, &mut body)
             .await
             .or_bad_request("Bad payload")?;
-        serde_yaml::from_slice::<Entry>(&body).or_bad_request("Bad yaml entry")?
+        serde_yaml::from_slice::<EntryFields>(&body).or_bad_request("Bad yaml entry")?
     } else {
         return Err(ImpError::BadRequest("", "Bad Content-Type".into()));
     };
 
+    let backend_conf = cfg
+        .backends
+        .get(&backend_name)
+        .ok_or_else(|| ImpError::BadRequest("", "Unknown backend".into()))?;
 
     // get backend to use
     // - first we get a read lock on backends
@@ -115,7 +119,7 @@ async fn post_comment_handler(
     let mut lock = backends.read();
     let backend = if let Some(backend) = lock.get(&backend_name) {
         backend
-    } else if let Some(backend_conf) = cfg.backends.get(&backend_name) {
+    } else {
         drop(lock); //drop read lock (so we can acquire write lock)
         lock = {
             //acquire write lock
@@ -123,74 +127,138 @@ async fn post_comment_handler(
             //confirm no-one just added the client before we relocked
             if !write.contains_key(&backend_name) {
                 //insert new backend client using write lock
-                write.insert(backend_name.clone(),Mutex::from(backend_conf.new_client().await?));
-                //return new readlock (obtained inside write lock), dropping write lock
+                write.insert(
+                    backend_name.clone(),
+                    Mutex::from(backend_conf.new_client().await?),
+                );
             }
+            //return new readlock (obtained inside write lock), dropping write lock
             RwLockWriteGuard::downgrade(write)
         };
         //return the newly added backend client (using the read lock)
         lock.get(&backend_name).unwrap()
-    } else {
-        return Err(ImpError::BadRequest("", "Unknown backend".into()));
     };
 
     // get entry conf to use (from project if enabled)
-    // - if project_config_path set we try project config first
-    //   - if we can't load project config we error
-    // - if project doesn't have entry type, try global conf entry types
-    // - if we never found entry conf it is an error
+    // - first try project_conf_path if set
+    // - fall back to global conf entry types
     // - entry conf in Cow so we don't need to clone global entry conf
     //   - borrowed from global conf or owned from project conf
-    let entry_conf = if !cfg.project_config_path.is_empty() {
-        //project-conf enabled -- get project conf file
-        // - error if we can't load project conf
-        backend
-            .lock()
-            .get_conf(&cfg, &project_id, &branch)
-            .await?
-            .entries
-            .remove(&entry_type) //all we care about is the current entry type
-            .and_then(|conf| Some(Cow::Owned(conf)))
-    } else {
-        //project conf disabled
-        None
-    }
-    //if we didn't get conf from project, try global conf entry types
-    .or_else(
-        ||
-        cfg.entries.get(&entry_type) //get global conf entry config
-            .and_then(|conf| Some(Cow::Borrowed(conf))), //wrap global conf entry type in Cow::Borrowed
-    )
-    //error if we couldn't find entry type (got None)
-    .ok_or(ImpError::BadRequest("", "Unknown entry type".into()))?; //return error if we couldn't find entry type
+    let entry_conf = backend
+        .lock()
+        .get_conf(&backend_conf, &project_id, &branch)
+        .await?
+        //all we need is the current entry type
+        .and_then(|mut conf| conf.entries.remove(&entry_type))
+        //wrap it in an Owned Cow
+        .and_then(|conf| Some(Cow::Owned(conf)))
+        .or_else(||
+            // try global entry config (and wrap in Cow)
+            cfg.entries
+                .get(&entry_type)
+                .and_then(|conf| Some(Cow::Borrowed(conf))))
+        .and_then(|conf| {
+            //if entry type is disabled, error on unknown entry
+            if conf.disabled {
+                None
+            } else {
+                Some(conf)
+            }
+        })
+        //error if we couldn't find entry type (got None)
+        .ok_or(ImpError::BadRequest("", "Unknown entry type".into()))
+        .and_then(|conf| {
+            //validate that the target branch is allowed by entry conf
+            if conf.validate_branch(&branch) {
+                Ok(conf)
+            } else {
+                Err(ImpError::BadRequest("", "Invalid entry branch".into()))
+            }
+        })?;
 
     //create the NewEntry and process the entry fields
     let newentry = cfg
         .new_entry(project_id, branch, entry_fields, query_params)
         .process_fields(entry_conf.field_config())?;
 
-    //create new entry
-    backend
-        .lock()
-        .new_entry(&entry_conf, newentry)
-        .await?;
-
+    //send new entry to backend
+    backend.lock().new_entry(&entry_conf, newentry).await?;
     Ok(actix_web::HttpResponse::Ok().finish())
+}
+
+/// Load staticimp config from file/stdin
+///
+/// determines where/how to load config from using `env::args()`
+/// - `-f <path>` - load config from file
+/// - `-f -` - load config from stdin
+/// - `--yaml | --yml` - config is yaml
+///   - this is the default unless path ends in ".json"
+/// - `--json` - config is json
+fn load_config() -> ImpResult<staticimp::Config> {
+    use staticimp::SerializationFormat::{Json, Yaml};
+    let mut config_path = "staticimp.yml".to_string();
+    let mut config_format = None;
+    let mut print_config = false;
+
+    let mut args = std::env::args().skip(1);
+
+    while let Some(arg) = args.next() {
+        if arg == "-f" {
+            let path = args
+                .next()
+                .ok_or_else(|| ImpError::InternalError("", "Missing config path".into()))?;
+            config_path = path;
+        } else if arg == "--yaml" || arg == "--yml" {
+            config_format = Some(Yaml);
+        } else if arg == "--json" {
+            config_format = Some(Json);
+        } else if arg == "--print-config" {
+            print_config = true;
+        } else {
+            return Err(ImpError::InternalError(
+                "",
+                format!("Unknown Argument: {}", arg).into(),
+            ));
+        }
+    }
+
+    // if config_format not specified in args, determine format from path
+    let config_format =
+        config_format.unwrap_or_else(|| SerializationFormat::from_path(&config_path));
+
+    //if path is "-", read config from stdin instead of file
+    //
+    // ignores env_var overrides when reading conf from stdin
+    if &config_path == "-" {
+        config_format.deserialize_reader(io::stdin())
+    } else {
+        //else load from file
+        Config::load(&config_path, config_format).and_then(|cfg| Ok(cfg.env_override()))
+    }
+    .and_then(|conf| {
+        if print_config {
+            //we use a debug error to print the config and exit
+            Err(ImpError::debug(config_format.serialize_pretty(&conf)?))
+        } else {
+            Ok(conf)
+        }
+    })
 }
 
 //main - load config and start HttpServer
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let cfgpath = "staticimp.yml";
-    let cfg = match Config::load(cfgpath) {
-        Ok(cfg) => cfg.env_override(),
-        Err(e) => {
-            //eprintln!("Error loading config: {:#?}",e);
-            eprintln!("Error loading {}: {}", cfgpath, e);
-            std::process::exit(1);
+    let cfg = load_config().unwrap_or_else(|e| {
+        match e {
+            ImpError::Debug(s) => println!("{}", s),
+            e => eprintln!("{}", e),
         }
-    };
+        std::process::exit(1);
+    });
+
+    //wrap Config in ConfigData for actix worker threads
     let cfg = ConfigData::new(Arc::new(cfg));
+
     //let backends : HashMap<String,Backend> = cfg.backends.iter().map(|(k,v)| (k,v.new_client().await?)).collect();
     //let backends = BackendsData::new(Box::new(backends));
     let backends = BackendsData::new(RwLock::from(HashMap::new())); //let threads create clients as-needed

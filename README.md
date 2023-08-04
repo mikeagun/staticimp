@@ -75,7 +75,7 @@ needed and there are some important features that I am still implementing.
 - specify allowed hosts for a backend
 
 
-# Building and Running
+# Building and Running staticimp
 
 ## Docker
 
@@ -113,11 +113,25 @@ cargo build --release
 gitlab_token=XXXXXXXXXX target/release/staticimp
 ```
 
+## Program Arguments
+
+By default staticimp reads the server config from `staticimp.yml`.
+
+To change this pass arguments to staticimp on the command line:
+- `-f <path>` - read local config file from `<path>`
+- `-f -` - read config from stdin (this also disables environment variable processing)
+- `--yaml` or `--yml` - read config as yaml (this is the default unless `<path>` ends in `.json`)
+- `--json` - read config as json
+
+You can pass `--print-config` to print the server config and exit
+- the config gets printed in the same format as the input config
+- you can use this to strip comments from yaml config or to expand default fields
+
 # Testing staticimp
 
 Below are some useful oneliners for testing if staticimp is up and working.
 
-the examples using `curl` are probably the ones you want, but for testing on minimal systems without installing curl there are `wget` and `nc` (netcat) examples too.
+the examples using `curl` are probably the ones you want, but there are also `wget` and `nc` (netcat) examples.
 
 ### test reachability
 ```bash
@@ -151,7 +165,9 @@ The easiest way to use staticimp is have it commit files directly to your websit
 Your CI/CD job that builds the static site stays the same,
 and you just need to configure your SSG to display the staticimp content.
 
-Steps to get comment live (with comments in website repo):
+### Comments in Website Repo
+
+Steps to get comment live:
 1. HTML Form POSTs to staticimp
 1. staticimp commits file to website repo
 1. website repo CI/CD automatically rebuilds site with new comment and deploys to live site
@@ -169,12 +185,17 @@ but in the best case your git history will still be thoroughly cluttered.
 Since I like keeping a relatively clean git history, I have staticimp push files to a separate repo, and then have the main content repo pull the latest
 changes on build.
 
-Steps to get comment live (with separate comments repo):
+### Separate Comments Repo
+
+Steps to get comment live:
 1. HTML Form POSTs to staticimp
 1. staticimp commits file to separate comments repo
 1. comments repo CI/CD triggers website repo build+deploy pipeline
 1. website repo CI/CD automatically rebuilds site with new comments and deploys to live site
   - added to the build step above is cloning the comments repo or making it a git submodule
+
+With this approach the comments are kept separate until website build time (then pulled from comments repo).
+To build on comment commit, a CI job from the comments repo triggers rebuilds of the main website repo.
 
 # Moderation
 staticimp supports moderated entries when `review: true` is set in the entry config.
@@ -289,15 +310,17 @@ contains default entry types to support. entry types in the server conf are over
 project conf entry types of the same name.
 
 `comment:` - entry type name (in this case `comment`)
+- `debug:` - return entry debugging info instead of commiting new entry (default: `false`)
+  - if `true` goes through all entry processing, then returns config and entry detailes instead of sending via backend client
 - `fields:` - entry field processing configuration
   - `allowed:` - allowed entry fields (default: `[ ]`)
   - `required:` - required entry fields (default: `[ ]`)
-  - `extra:` - _optional_
+  - `extra:`
     - _... extra fields to generate ..._
-  - transforms: - _optional_
+  - transforms:
     - _... transforms to apply ..._
 - `review:` - whether to moderate comments (default: `false`)
-  - if true, entries get created in a new review branch
+  - if `true`, entries get created in a new review branch
 - `format:` - serialization format for entries (default: `json`)
 - `git:` - _optional_ - git specific entry configuration (these all support placeholders)
   - `path:` - directory path to place entries in (default: `"data/entries"`)
@@ -317,11 +340,11 @@ comment:
     allowed: ["name", "email", "website", "comment", "replyThread", "replyName", "replyID"]
     required: ["name", "email", "comment"]
     extra:
-      _id: #add comment uid as '_id' field
-        value: "{@id}"
-      date: #add entry timestamp (verbose ISO8601)
-        #for format syntax see: https://docs.rs/chrono/latest/chrono/format/strftime/index.html
-        value: "{@date:%+}"
+      # add comment uid as '_id' field
+      _id: "{@id}"
+      # add entry timestamp (verbose ISO8601)
+      # for format syntax see: https://docs.rs/chrono/latest/chrono/format/strftime/index.html
+      date: "{@date:%+}"
     transforms:
       - field: email
         transform: md5

@@ -1,6 +1,6 @@
 //! Simple module for sending sets of fields to backend APIs
 //!
-//! staticimp takes [Entry]s with fields, performs validation and transformations,
+//! staticimp takes entrys with fields, performs validation and transformations,
 //! and then sends the entry to a backend (currently just gitlab or the debug backend).
 //!
 //! All the code was written by me (Michael Agun), but this project was inspired by
@@ -14,12 +14,11 @@
 //! - configuration can use placeholders to fill in/transform entries
 //!   - uses rendertemplate (in this crate) for rendering placeholders
 //! - loads configuration from `staticman.yml`
-//!   - doesn't yet support project-specific config or json
 //! - entries are validated by checking for allowed/required fields
 //!   - doesn't yet support any formatting validation
 //! - moderation (by submiting entry to review branch with MR)
 //! - extra fields generated from config
-//! - has code to load/handle field transformations (but doesn't have any implemented yet)
+//! - field transformations
 //! - supports gitlab and debug backends currently
 //!
 //!
@@ -43,7 +42,7 @@
 //! **Debug**
 //!
 //! - [DebugConfig]
-//! the Debug backend just returns ImpError::Debug with the processed Entry
+//! the Debug backend just returns ImpError::Debug with the processed entry
 //!
 //! This is mostly just for development and testing config files
 //!
@@ -68,6 +67,7 @@ use markdown_table::MarkdownTable;
 use md5;
 use rendertemplate::render_str;
 use rendertemplate::Render;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
 use sha256;
@@ -76,9 +76,12 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
+use std::io;
+use std::ops::Deref;
 use uuid::Uuid;
 //use std::cell::RefCell;
 //use std::ops::Deref;
+use SerializationFormat::{Json, Yaml};
 
 type BoxError = Box<dyn std::error::Error>;
 
@@ -91,41 +94,49 @@ pub enum ImpError {
     BadRequest(&'static str, BoxError),
     /// InternalServerError with message and child error
     InternalError(&'static str, BoxError),
-    /// Debugging error
+    /// Debugging info (returns 200 OK)
     ///
-    /// create using `ImpError::debug*` functions
-    Debug(&'static str, BoxError),
+    Debug(String),
 }
 
 /// ImpError constructors
 #[allow(dead_code)]
 impl ImpError {
     /// returns string for debugging (as an ImpError)
-    fn debug<T>(msg: &'static str, val: T) -> Self
+    pub fn debug<T>(val: T) -> Self
     where
         T: std::fmt::Display,
     {
-        ImpError::Debug(msg, val.to_string().into())
+        ImpError::Debug(val.to_string())
     }
     /// returns debug-print of object for debugging
-    fn debug_dbg<T>(msg: &'static str, val: T) -> Self
+    pub fn debug_dbg<T>(val: T) -> Self
     where
         T: std::fmt::Debug,
     {
-        ImpError::Debug(msg, format!("{:?}", val).into())
+        ImpError::Debug(format!("{:?}", val))
     }
     /// returns pretty-printed json object for debugging
     ///
     /// If serialization fails it returns the debug-print of the object
-    fn debug_pretty<T>(msg: &'static str, val: T) -> Self
+    pub fn debug_json<T>(val: T) -> Self
     where
         T: std::fmt::Debug + Serialize,
     {
-        let val_str = match serde_json::to_string_pretty(&val) {
-            Ok(s) => s,
-            Err(e) => format!("{:?}\n+Serialize err: {:?}", val, e),
-        };
-        ImpError::Debug(msg, val_str.into())
+        Json.serialize(&val)
+            .and_then(|s| Ok(ImpError::Debug(s)))
+            .unwrap_or_else(|e| e)
+    }
+    /// returns yaml object for debugging info
+    ///
+    /// If serialization fails it returns the debug-print of the object
+    pub fn debug_yaml<T>(val: T) -> Self
+    where
+        T: std::fmt::Debug + Serialize,
+    {
+        Yaml.serialize(&val)
+            .and_then(|s| Ok(ImpError::Debug(s)))
+            .unwrap_or_else(|e| e)
     }
 }
 
@@ -145,7 +156,7 @@ impl Display for ImpError {
         match self {
             BadRequest(s, e) => write!(f, "{}{}", fmt_msg(s), e.to_string()),
             InternalError(s, e) => write!(f, "{}{}", fmt_msg(s), e.to_string()),
-            Debug(s, e) => write!(f, "{}{}", fmt_msg(s), e),
+            Debug(s) => write!(f, "{}", s),
         }
     }
 }
@@ -167,7 +178,7 @@ impl actix_web::ResponseError for ImpError {
         match self {
             BadRequest(_, _) => StatusCode::BAD_REQUEST,
             InternalError(_, _) => StatusCode::INTERNAL_SERVER_ERROR,
-            Debug(_, _) => StatusCode::INTERNAL_SERVER_ERROR,
+            Debug(_) => StatusCode::OK,
         }
     }
 }
@@ -224,8 +235,9 @@ enum FieldTransformType {
 ///
 /// This also acts as the builder for generated fields (using [GeneratedField::render])
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct GeneratedField {
-    value: String,
+#[serde(untagged)]
+enum GeneratedField {
+    Value(String),
 }
 
 /// Renders a generated field
@@ -234,16 +246,18 @@ impl Render<&NewEntry, ImpResult<String>> for GeneratedField {
     ///
     /// currently just replaces placeholders in self.value
     fn render(&self, entry: &NewEntry) -> ImpResult<String> {
-        Ok(render_str(&self.value, entry))
+        match self {
+            GeneratedField::Value(val) => Ok(render_str(&val, entry)),
+        }
     }
 }
 
 /// Field validation and mutation rules for entry
 ///
-/// - `allowed` - list of fields that are allowed to be in a Entry
-/// - `required` - fields that must exist in the Entry
-/// - `transforms` - transformations to apply to entry fields
+/// - `allowed` - list of fields that are allowed to be in an entry
+/// - `required` - fields that must exist in the entry
 /// - `extra` - fields to generate and add to entry
+/// - `transforms` - transformations to apply to entry fields
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct FieldConfig {
     #[serde(default)]
@@ -251,56 +265,59 @@ pub struct FieldConfig {
     #[serde(default)]
     required: HashSet<String>,
     #[serde(default)]
-    transforms: Vec<FieldTransform>,
-    #[serde(default)]
     extra: HashMap<String, GeneratedField>,
+    #[serde(default)]
+    transforms: Vec<FieldTransform>,
 }
 
 /// Serialization format
 ///
-/// defaults to json for entries, and yaml for config
+/// defaults to yaml
 ///
-/// Includes serialization functions (using serde)
+/// the member functions on SerializationFormat support convenient (de)serialization functions
 #[derive(Default, Copy, Clone, Debug, Serialize, Deserialize)]
-enum SerializationFormat {
+pub enum SerializationFormat {
     /// json serialization (using serde_json)
     #[serde(rename = "json")]
-    #[default]
     Json,
 
     /// yaml serialization (using serde_yaml)
     #[serde(rename = "yaml", alias = "yml")]
+    #[default]
     Yaml,
 }
 
 /// serialization functions
 impl SerializationFormat {
     /// serialize object to string
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if serde to_string errors
-    fn serialize<T>(&self, val: &T) -> ImpResult<String>
+    pub fn serialize<T>(&self, val: &T) -> ImpResult<String>
     where
         T: Serialize,
     {
-        use SerializationFormat::*;
         let serialized = match self {
             Json => serde_json::to_string(&val).or_bad_request("Bad json output")?,
             Yaml => serde_yaml::to_string(&val).or_bad_request("Bad yaml output")?,
         };
         Ok(serialized)
     }
+
+    /// serialize object to string
+    pub fn serialize_pretty<T>(&self, val: &T) -> ImpResult<String>
+    where
+        T: Serialize,
+    {
+        let serialized = match self {
+            Json => serde_json::to_string_pretty(&val).or_bad_request("Bad json output")?,
+            Yaml => serde_yaml::to_string(&val).or_bad_request("Bad yaml output")?,
+        };
+        Ok(serialized)
+    }
+
     ///// deserialize object from &str
-    /////
-    ///// # Errors
-    /////
-    ///// This function will return an error if serde from_str errors
     //fn from_str<'a,T>(&self, serialized : &'a str) -> ImpResult<T>
     //where
     //    T : Deserialize<'a>
     //{
-    //    use SerializationFormat::*;
     //    let val = match self {
     //        Json => serde_json::from_str(&serialized)
     //            .or_internal_error("Bad json input")?,
@@ -310,20 +327,38 @@ impl SerializationFormat {
     //    Ok(val)
     //}
     /// deserialize object from slice
-    ///
-    /// # Errors
-    ///
-    /// This function will return an error if serde from_str errors
-    fn from_slice<'a, T>(&self, serialized: &'a [u8]) -> ImpResult<T>
+    pub fn deserialize_slice<'a, T>(&self, serialized: &'a [u8]) -> ImpResult<T>
     where
         T: Deserialize<'a>,
     {
-        use SerializationFormat::*;
         let val = match self {
             Json => serde_json::from_slice(&serialized).or_internal_error("Bad json input")?,
             Yaml => serde_yaml::from_slice(&serialized).or_internal_error("Bad yaml input")?,
         };
         Ok(val)
+    }
+    /// deserialize object from reader
+    pub fn deserialize_reader<T, R>(&self, rdr: R) -> ImpResult<T>
+    where
+        R: io::Read,
+        T: DeserializeOwned,
+    {
+        match self {
+            Json => serde_json::from_reader(rdr).or_internal_error("Bad json input"),
+            Yaml => serde_yaml::from_reader(rdr).or_internal_error("Bad yaml input"),
+        }
+    }
+    /// determine [SerializationFormat] based on path
+    ///
+    /// rules:
+    /// - if path ends in ".json", assume json
+    /// - else assume/default to yaml
+    pub fn from_path(path: &str) -> Self {
+        if path.ends_with(".json") {
+            Json
+        } else {
+            Yaml
+        }
     }
 }
 
@@ -360,7 +395,7 @@ impl GitEntryConfig {
     }
     /// default entry filename ( "comment-{@timestamp}.yml" )
     fn default_filename() -> String {
-        "comment-{@timestamp}.yml".to_string()
+        "entry-{@timestamp}.yml".to_string()
     }
     /// default branch to send files to ( "main" )
     fn default_branch() -> String {
@@ -372,7 +407,8 @@ impl GitEntryConfig {
     }
     /// default merge request description
     fn default_mr_description() -> String {
-        "new staticimp entry awaiting approval\n\nMerge the pull request to accept it, or close it to deny the entry".to_string()
+        "new staticimp entry awaiting approval\n\nMerge the pull request to accept it, or close it"
+            .to_string()
     }
     /// default commit message
     fn default_commit_message() -> String {
@@ -387,8 +423,12 @@ impl GitEntryConfig {
 pub struct EntryConfig {
     /// Whether this entry type is disabled
     #[serde(default)]
-    disabled: bool,
+    pub disabled: bool,
+    /// return processed entry instead of sending to backend
+    #[serde(default)]
+    pub debug: bool,
     /// Configuration for entry fields
+    #[serde(default)]
     fields: FieldConfig,
     /// Whether moderation is enabled
     #[serde(default)]
@@ -396,7 +436,7 @@ pub struct EntryConfig {
     /// Whether recaptcha is enabled
     #[serde(default)]
     recaptcha: bool,
-    /// Entry serialization format
+    /// entry serialization format
     #[serde(default)]
     format: SerializationFormat,
     /// Git-specific entry config
@@ -409,6 +449,13 @@ impl EntryConfig {
     /// get the configuration for entry fields
     pub fn field_config(&self) -> &FieldConfig {
         &self.fields
+    }
+    pub fn validate_branch(&self, branch: &str) -> bool {
+        if let Some(git_config) = &self.git {
+            git_config.branch.is_empty() || git_config.branch == branch
+        } else {
+            true
+        }
     }
 }
 
@@ -427,11 +474,11 @@ pub trait BackendAPI {
     /// - `ref_` - backend ref (e.g. branch)
     async fn get_conf(
         &mut self,
-        config: &Config,
+        config: &BackendConfig,
         project_id: &str,
         ref_: &str,
-    ) -> ImpResult<ProjectConfig>;
-    //async fn get_entry(&self, id: &str, path: &str) -> ImpResult<Entry>;
+    ) -> ImpResult<Option<ProjectConfig>>;
+    //async fn get_entry(&self, id: &str, path: &str) -> ImpResult<EntryFields>;
 }
 
 /// Gitlab backend configuration
@@ -463,31 +510,55 @@ pub struct DebugConfig {}
 impl BackendAPI for DebugConfig {
     /// debug new_entry -- just returns entry_conf and processed entry fields to client
     async fn new_entry(&mut self, entry_conf: &EntryConfig, entry: NewEntry) -> ImpResult<()> {
-        Err(ImpError::debug_pretty("", (entry_conf, entry)))
+        Err(ImpError::debug(format!(
+            "# Entry Config:\n{}\n\n# Processed Entry:\n{}\n",
+            Yaml.serialize(&entry_conf)?,
+            entry_conf.format.serialize_pretty(&entry)?
+        )))
     }
     async fn get_conf(
         &mut self,
-        _config: &Config,
+        _config: &BackendConfig,
         _project_id: &str,
         _ref_: &str,
-    ) -> ImpResult<ProjectConfig> {
-        //Err(ImpError::debug_pretty("", (config, project_id, ref_)))
-        Ok(ProjectConfig::new())
+    ) -> ImpResult<Option<ProjectConfig>> {
+        //Err(ImpError::debug_json((config, project_id, ref_)))
+        Ok(None)
     }
 }
 
-/// enum of backend configuration variants
-///
-/// serde deserializes BackendConfigs from config file
+/// enum of backend specific configuration variants
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "driver")]
-pub enum BackendConfig {
+pub enum DriverConfig {
     /// gitlab backend configuration
     #[serde(rename = "gitlab")]
     Gitlab(GitlabConfig),
     /// debug backend configuration
     #[serde(rename = "debug")]
     Debug(DebugConfig),
+}
+
+/// Backend configuration
+/// - contains both shared config values and backend-specific values
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BackendConfig {
+    /// path to project-specific configuration file
+    #[serde(default)]
+    project_config_path: String, //empty -- global server conf only
+
+    /// serialization type for project config (default: None)
+    ///
+    /// if None, guesses based on project_config_path (defaulting to yaml)
+    #[serde(default)]
+    project_config_format: Option<SerializationFormat>,
+
+    /// Driver specific config settings
+    ///
+    /// In config file these get flattened into the backend (since they shouldn't overlap with
+    /// driver specific settings)
+    #[serde(flatten)]
+    driver: DriverConfig,
 }
 
 impl BackendConfig {
@@ -497,12 +568,20 @@ impl BackendConfig {
     ///
     /// for Debug it just clones the debug config
     pub async fn new_client(&self) -> ImpResult<Backend> {
-        match self {
-            BackendConfig::Gitlab(conf) => {
+        match &self.driver {
+            DriverConfig::Gitlab(conf) => {
                 let client = conf.new_client().await?;
                 Ok(Backend::Gitlab(client))
             }
-            BackendConfig::Debug(conf) => Ok(Backend::Debug(conf.clone())),
+            DriverConfig::Debug(conf) => Ok(Backend::Debug(conf.clone())),
+        }
+    }
+
+    fn format(&self) -> SerializationFormat {
+        if let Some(format) = self.project_config_format {
+            format
+        } else {
+            SerializationFormat::from_path(&self.project_config_path)
         }
     }
 }
@@ -520,53 +599,31 @@ impl BackendConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     /// set of backend configurations
+    #[serde(default)]
     pub backends: HashMap<String, BackendConfig>,
     /// host to listen on
+    #[serde(default = "Config::default_host")]
     pub host: String,
     /// port to listen on
+    #[serde(default = "Config::default_port")]
     pub port: u16,
-    /// path to project-specific configuration file
-    #[serde(default)]
-    pub project_config_path: String, //empty -- global service conf only
-    /// serialization type for project config (defaults to yaml)
-    #[serde(default = "Config::default_conf_format")]
-    project_config_format: SerializationFormat,
     /// format used for `{@timestamp}` placeholders
     /// - this gets stored in [NewEntry.timestamp_str] at creation
     #[serde(default = "Config::default_timestamp_format")]
     timestamp_format: String,
     /// configuration for each entry type
+    #[serde(default)]
     pub entries: HashMap<String, EntryConfig>,
-}
-
-/// Project-specific config (project entry types)
-///
-/// This is loaded from project_config_path for each project (if the config value is set)
-///
-/// project config consists of a list of entry types.
-/// - these override same-name global entries
-/// - global entry types (that haven't been overriden) are still available
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProjectConfig {
-    /// project-specific entry types
-    ///
-    /// project entries override global config entry types
-    pub entries: HashMap<String, EntryConfig>,
-}
-
-impl ProjectConfig {
-    pub fn new() -> Self {
-        ProjectConfig { entries: HashMap::new() }
-    }
 }
 
 impl Config {
     /// Load configuration file
     ///
     /// deserializes Config using serde_yaml
-    pub fn load(path: &str) -> ImpResult<Self> {
+    pub fn load(path: &str, format: SerializationFormat) -> ImpResult<Self> {
         let f = std::fs::File::open(path).or_internal_error("Couldn't open config file")?;
-        Ok(serde_yaml::from_reader(f).or_internal_error("Bad config yaml")?)
+
+        format.deserialize_reader(f)
     }
 
     /// override config parameters from environment variables
@@ -575,7 +632,6 @@ impl Config {
     /// - makes for clean code (see examples)
     ///
     /// Supported overrides:
-    /// - `timestamp_format` - default timestamp format
     /// - `<backend>_host` - hostname for the specified backend
     /// - `<backend>_token` - authentication token for the specified backend
     ///
@@ -606,27 +662,33 @@ impl Config {
             }
         };
 
-        env_override(&mut self.timestamp_format, "timestamp_format");
+        //env_override(&mut self.timestamp_format, "timestamp_format");
 
         for (name, backend) in self.backends.iter_mut() {
-            match backend {
-                BackendConfig::Gitlab(gitlab) => {
+            match &mut backend.driver {
+                DriverConfig::Gitlab(gitlab) => {
                     env_override(&mut gitlab.host, &(name.clone() + "_host"));
                     env_override(&mut gitlab.token, &(name.clone() + "_token"));
                 }
-                BackendConfig::Debug(_) => {}
+                DriverConfig::Debug(_) => {}
             }
         }
         self
     }
+
+    /// default host (interface) to listen on
+    fn default_host() -> String {
+        "127.0.0.1".to_string()
+    }
+
+    /// default port to listen on
+    fn default_port() -> u16 {
+        8080
+    }
+
     /// default Timestamp format (compact ISO8601 with milliseconds)
     fn default_timestamp_format() -> String {
         "%Y%m%dT%H%M%S%.3fZ".to_string()
-    }
-
-    /// default conf format (yaml)
-    fn default_conf_format() -> SerializationFormat {
-        SerializationFormat::Yaml
     }
 
     /// build a [NewEntry]
@@ -636,40 +698,53 @@ impl Config {
         &self,
         project_id: String,
         branch: String,
-        entry: Entry,
+        fields: EntryFields,
         params: HashMap<String, String>,
     ) -> NewEntry {
-        NewEntry::new(self, project_id, branch, entry, params)
+        NewEntry::new(self, project_id, branch, fields, params)
     }
 }
 
-/// staticimp Entry content
+/// Project-specific config (project entry types)
+///
+/// This is loaded from project_config_path for each project (if the config value is set)
+///
+/// project config consists of a list of entry types.
+/// - these override same-name global entries
+/// - global entry types (that haven't been overriden) are still available
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    /// project-specific entry types
+    ///
+    /// project entries override global config entry types
+    pub entries: HashMap<String, EntryConfig>,
+}
+
+/// staticimp entry fields
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
-pub struct Entry {
-    /// Entry Fields
+pub struct EntryFields {
+    /// entry eields
     #[serde(flatten)]
     fields: HashMap<String, String>,
 }
 
-impl Entry {
-    /// create new entry from HashMap
-    pub fn _new(fields: HashMap<String, String>) -> Self {
-        Entry { fields }
-    }
-    /// set entry fields (and returns self)
-    fn _field(mut self, key: String, value: String) -> Self {
-        self.fields.insert(key, value);
-        self
-    }
+impl Deref for EntryFields {
+    type Target = HashMap<String, String>;
 
+    fn deref(&self) -> &Self::Target {
+        &self.fields
+    }
+}
+
+impl EntryFields {
     /// serialize entry for sending to backend
-    fn serialize(&self, serializer: SerializationFormat) -> ImpResult<Vec<u8>> {
-        Ok(serializer.serialize(&self.fields)?.as_bytes().into())
+    fn serialize(&self, format: SerializationFormat) -> ImpResult<Vec<u8>> {
+        Ok(format.serialize(&self)?.as_bytes().into())
     }
 }
 
 /// builder for sending a new entry to the backend
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct GitEntry {
     /// id for the project to send this entry to
     project_id: String,
@@ -678,21 +753,21 @@ pub struct GitEntry {
     /// path to write the entry to
     file_path: String,
     /// entry content
-    entry: Entry,
+    fields: EntryFields,
     /// commit message for entry
     commit_message: String,
     /// review branch name (if review enabled)
     review_branch: Option<String>,
     /// merge request description (if review enabled)
     mr_description: Option<String>,
-    /// serializer to use
-    serializer: SerializationFormat,
+    /// serialization format to use
+    format: SerializationFormat,
 }
 
 impl GitEntry {
     /// serialize entry fields per entry config
     fn serialize(&self) -> ImpResult<Vec<u8>> {
-        self.entry.serialize(self.serializer)
+        self.fields.serialize(self.format)
     }
 }
 
@@ -710,7 +785,7 @@ pub struct NewEntry {
     /// project branch
     branch: String,
     /// entry fields
-    entry: Entry,
+    fields: EntryFields,
     /// params attached to request (HTTP query parameterss)
     params: HashMap<String, String>,
     //special : &'a HashMap<&'a str, String>,
@@ -722,7 +797,7 @@ impl NewEntry {
         config: &Config,
         project_id: String,
         branch: String,
-        entry: Entry,
+        fields: EntryFields,
         params: HashMap<String, String>,
     ) -> Self {
         let uid = Uuid::new_v4().to_string();
@@ -734,7 +809,7 @@ impl NewEntry {
             timestamp_str,
             project_id,
             branch,
-            entry,
+            fields,
             params,
             //special : HashMap::from([
             //    ( "@id", uid )
@@ -752,10 +827,12 @@ impl NewEntry {
     /// validate fields in entry
     fn validate_fields(self, conf: &FieldConfig) -> ImpResult<Self> {
         //collect field keys used in entry
-        let keys: HashSet<String> = self.entry.fields.keys().map(|s| s.to_string()).collect();
-        if !conf.required.is_subset(&keys) { //make sure all required keys are in entry
+        let keys: HashSet<String> = self.fields.keys().map(|s| s.to_string()).collect();
+        if !conf.required.is_subset(&keys) {
+            //make sure all required keys are in entry
             Err(ImpError::BadRequest("", "Missing field(s)".into()))
-        } else if !keys.is_subset(&conf.allowed) { //make sure only allowed keys are used
+        } else if !keys.is_subset(&conf.allowed) {
+            //make sure only allowed keys are used
             Err(ImpError::BadRequest("", "Unknown field(s)".into()))
         } else {
             // passed all validation requests, return self
@@ -770,7 +847,7 @@ impl NewEntry {
     {
         for (key, gen) in fields {
             let val = gen.render(&self)?;
-            self.entry.fields.insert(key.to_string(), val);
+            self.fields.fields.insert(key.to_string(), val);
         }
         Ok(self)
     }
@@ -781,7 +858,7 @@ impl NewEntry {
         I: IntoIterator<Item = &'a FieldTransform>,
     {
         for t in transforms {
-            if let Some(field) = self.entry.fields.get_mut(&t.field) {
+            if let Some(field) = self.fields.fields.get_mut(&t.field) {
                 use FieldTransformType::*;
                 *field = match t.transform {
                     Slugify => slugify(&field),
@@ -818,7 +895,7 @@ impl NewEntry {
 ///
 /// missing placeholders are collapsed (render to empty string)
 impl<'a> Render<&str, Option<Cow<'a, str>>> for &'a NewEntry {
-    /// renders a Entry field or config value for a NewEntry
+    /// renders an entry field or config value for a NewEntry
     ///
     /// return value is `Option<Cow>`
     /// - borrowed from entry for most placeholders
@@ -845,8 +922,7 @@ impl<'a> Render<&str, Option<Cow<'a, str>>> for &'a NewEntry {
         } else {
             if let Some((lhs, rhs)) = placeholder.split_once('.') {
                 if lhs == "fields" {
-                    self.entry
-                        .fields
+                    self.fields
                         .get(rhs)
                         .and_then(|v| Some(Cow::Borrowed(v.as_str())))
                 } else if lhs == "params" {
@@ -882,17 +958,16 @@ impl Render<NewEntry, ImpResult<GitEntry>> for EntryConfig {
                 let file_path = Path::new(&file_path)
                     .join(&filename)
                     .to_str()
-                    .ok_or_else(|| ImpError::BadRequest("", "Bad Entry Path".to_string().into()))?
+                    .ok_or_else(|| ImpError::BadRequest("", "Bad entry path".to_string().into()))?
                     .to_string();
                 let branch = render_str(&gitconf.branch, &entry);
                 let commit_message = render_str(&gitconf.commit_message, &entry);
 
-                //if review is set, 
+                //if review is set,
                 let (review_branch, mr_description) = if self.review {
                     // create markdown table with entry fields for mr description (to make review easier)
                     let entry_table = MarkdownTable::new(
                         entry
-                            .entry
                             .fields
                             .iter()
                             .map(|(&ref k, &ref v)| vec![k, v])
@@ -924,18 +999,18 @@ impl Render<NewEntry, ImpResult<GitEntry>> for EntryConfig {
 
                 // destructure entry so we can move instead of cloning fields
                 let NewEntry {
-                    project_id, entry, ..
+                    project_id, fields, ..
                 } = entry;
 
                 Ok(GitEntry {
                     project_id,
                     branch,
                     file_path,
-                    entry,
+                    fields,
                     commit_message,
                     review_branch,
                     mr_description,
-                    serializer: self.format,
+                    format: self.format,
                 })
             }
         } else {
@@ -966,10 +1041,10 @@ impl BackendAPI for Backend {
     }
     async fn get_conf(
         &mut self,
-        config: &Config,
+        config: &BackendConfig,
         project_id: &str,
         ref_: &str,
-    ) -> ImpResult<ProjectConfig> {
+    ) -> ImpResult<Option<ProjectConfig>> {
         match self {
             Backend::Gitlab(api) => api.get_conf(config, project_id, ref_),
             Backend::Debug(conf) => conf.get_conf(config, project_id, ref_),
@@ -1011,7 +1086,7 @@ pub struct GitProject {
 #[async_trait::async_trait(?Send)]
 pub trait GitAPI {
     /// get repo file contents for given ref
-    async fn get_file(&self, project: &str, ref_: &str, path: &str) -> ImpResult<Vec<u8>>;
+    async fn get_file_raw(&self, project: &str, ref_: &str, path: &str) -> ImpResult<Vec<u8>>;
     /// commit a new file to the repo
     ///
     /// - `project` - git project id/path
@@ -1089,6 +1164,17 @@ pub trait GitAPI {
         .await?;
         Ok(())
     }
+
+    /// get deserialized file
+    async fn get_file<'a, T: 'a + DeserializeOwned>(
+        &self,
+        project: &str,
+        ref_: &str,
+        path: &str,
+        format: SerializationFormat,
+    ) -> ImpResult<T> {
+        format.deserialize_slice(&self.get_file_raw(project, ref_, path).await?)
+    }
 }
 
 /// gitlab api client
@@ -1112,6 +1198,13 @@ impl BackendAPI for GitlabAPI {
     /// create a new entry by commiting file to repo
     async fn new_entry(&mut self, entry_conf: &EntryConfig, entry: NewEntry) -> ImpResult<()> {
         let git_entry = entry_conf.render(entry)?; //create GitEntry from entry
+        if entry_conf.debug {
+            return Err(ImpError::debug(format!(
+                "# Entry Config:\n{}\n\n# Processed Entry:\n{}\n",
+                Yaml.serialize(&entry_conf)?,
+                git_entry.format.serialize_pretty(&git_entry)?
+            )));
+        }
         if let Some(review_branch) = git_entry.review_branch.as_ref() {
             let mr_description = git_entry.mr_description.as_ref().unwrap();
             self.new_file_mr(
@@ -1139,14 +1232,23 @@ impl BackendAPI for GitlabAPI {
     /// get project-specific gitlab backend config
     async fn get_conf(
         &mut self,
-        config: &Config,
+        config: &BackendConfig,
         project_id: &str,
         ref_: &str,
-    ) -> ImpResult<ProjectConfig> {
-        let config_bytes = self
-            .get_file(project_id, ref_, &config.project_config_path)
-            .await?;
-        Ok(config.project_config_format.from_slice(&config_bytes)?)
+    ) -> ImpResult<Option<ProjectConfig>> {
+        if config.project_config_path.is_empty() {
+            Ok(None)
+        } else {
+            //get deserialized conf from backend
+            self.get_file(
+                project_id,
+                ref_,
+                &config.project_config_path,
+                config.format(),
+            )
+            .await
+            .and_then(|conf| Ok(Some(conf)))
+        }
     }
 }
 
@@ -1165,7 +1267,7 @@ impl GitAPI for GitlabAPI {
     /// - `project` - git project id
     /// - `ref_` - branch / commit / tag
     /// - `path` - path of file to retrieve
-    async fn get_file(&self, project: &str, ref_: &str, path: &str) -> ImpResult<Vec<u8>> {
+    async fn get_file_raw(&self, project: &str, ref_: &str, path: &str) -> ImpResult<Vec<u8>> {
         let endpoint = gitlab::api::projects::repository::files::FileRaw::builder()
             .project(project)
             .ref_(ref_)
@@ -1175,7 +1277,7 @@ impl GitAPI for GitlabAPI {
         let file: Vec<u8> = gitlab::api::raw(endpoint)
             .query_async(&self.client)
             .await
-            .or_bad_request("Gitlab get_file failed")?;
+            .or_bad_request("Gitlab get_file_raw failed")?;
         Ok(file)
     }
 
@@ -1218,7 +1320,7 @@ impl GitAPI for GitlabAPI {
     /// create new branch
     ///
     async fn new_branch(&self, project: &str, branch: &str, ref_: &str) -> ImpResult<()> {
-        //Err(ImpError::debug_pretty("", (project,branch,ref_)))
+        //Err(ImpError::debug_json((project,branch,ref_)))
         let endpoint = CreateBranch::builder()
             .project(project)
             .branch(branch)

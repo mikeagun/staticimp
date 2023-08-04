@@ -30,18 +30,18 @@ backends:
     #token=...
 
 # configured entry types
-# `key:` - entry type (can be whatever you want)
-# `key.fields:` - configuration for processing entry fields
-# `key.review:` - whether to moderate comments
-#   - if true, entries get created in 
-# `key.format:` - serialization format for entries
-# `key.git:` - git specific entry configuration
-#   - all the git config parameters support placeholders
-#   `path:` - path of directory to store entries in
-#   `filename:` - name of entry file
-#   `branch:` - branch to commit entries to
-#     - if review enabled, commits entry to new branch and submits MR to target branch
-#   `commit_message:` - commit message to use
+# `comment:` - entry type (in this case `comment`)
+#   `fields:` - configuration for processing entry fields
+#   `review:` - whether to moderate comments
+#     - if true, entries get created in 
+#   `format:` - serialization format for entries
+#   `git:` - git specific entry configuration
+#     - all the git config parameters support placeholders
+#     `path:` - path of directory to store entries in
+#     `filename:` - name of entry file
+#     `branch:` - branch to commit entries to
+#       - if review enabled, commits entry to new branch and submits MR to target branch
+#     `commit_message:` - commit message to use
 entries: 
   comment:
     fields:
@@ -49,20 +49,35 @@ entries:
       allowed: ["name", "email", "website", "comment", "replyThread", "replyName", "replyID"]
       required: ["name", "email", "comment"]
       extra:
-        _id: #add comment uid as '_id' field
-          value: "{@id}"
-        date: #add entry timestamp (verbose ISO8601)
-          #for format syntax see: https://docs.rs/chrono/latest/chrono/format/strftime/index.html
-          value: "{@date:%+}"
+        # add comment uid as '_id' field
+        _id: "{@id}"
+        # add entry timestamp (verbose ISO8601)
+        # - for date format syntax see: https://docs.rs/chrono/latest/chrono/format/strftime/index.html
+        date: "{@date:%+}"
       transforms:
         - field: email
           transform: md5
     #review: false
     #format: yaml
-    git:
+    git: #git-specific entry config
+      # directory path to place entry files in
       path: "data/comments/{params.slug}" #default: "data/comments"
-      #filename: "comment-{@timestamp}.yml"
-      #branch: main
-      #commit_message: "New staticimp entry"
+
+      # entry filename (default: "comment-{@timestamp}.yml")
+      filename: "comment-{@timestamp}.yml"
+      
+      # target branch for entry (default: main)
+      branch: main
+
+      # commit message for new entry (default: "New staticimp entry")
+      commit_message: "New staticimp entry"
+
+      # name for entry branch, if review: true (default: "staticimp_{@id}")
       #review_branch: "staticimp_{@id}"
-      #mr_description: "new staticimp entry awaiting approval\n\nMerge the pull request to accept it, or close it to deny the entry"
+
+      # merge request description for review entries
+      #   - default: "new staticimp entry awaiting approval\n\nMerge the pull request to accept it, or close it to deny the entry"
+      mr_description: |
+        new staticimp entry awaiting approval
+        
+        Merge the pull request to accept it, or close it to deny the entry
