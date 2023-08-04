@@ -433,9 +433,9 @@ pub struct EntryConfig {
     /// Whether moderation is enabled
     #[serde(default)]
     review: bool,
-    /// Whether recaptcha is enabled
-    #[serde(default)]
-    recaptcha: bool,
+    ///// Whether recaptcha is enabled
+    //#[serde(default)]
+    //recaptcha: bool,
     /// entry serialization format
     #[serde(default)]
     format: SerializationFormat,

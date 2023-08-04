@@ -18,10 +18,8 @@ entries:
       allowed: ["name", "email", "website", "comment", "replyThread", "replyName", "replyID"]
       required: ["name", "email", "comment"]
       extra:
-        _id:
-          value: "{@id}"
-        date:
-          value: "{@date:%+}"
+        _id: "{@id}"
+        date: "{@date:%+}"
       transforms:
         - field: email
           transform: md5
