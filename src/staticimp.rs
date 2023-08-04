@@ -393,7 +393,7 @@ impl GitEntryConfig {
     fn default_path() -> String {
         "data/entries".to_string()
     }
-    /// default entry filename ( "comment-{@timestamp}.yml" )
+    /// default entry filename ( "entry-{@timestamp}.yml" )
     fn default_filename() -> String {
         "entry-{@timestamp}.yml".to_string()
     }

@@ -214,7 +214,9 @@ This lets you merge/close the MR to accept/ignore the comment
 The main practical differences between running staticimp and staticman:
 - server/project config files
   - `staticimp.yml` for server, configurable for project (`staticimp.yml` is a good choice)
-  - the configuration options are similar, but the config format is different. see [staticimp.sample.yml](staticimp.sample.yml)
+  - the staticimp and staticman configuration options are similar, but the config format is different
+    - see [staticimp.sample.yml](staticimp.sample.yml) for a sample server config
+  - the staticimp server/project config format is the same, but only `entries:` is used from the project conf
 - entry submission URL
   - `/v1/entry/{backend}/{project:.*}/{branch}/{entry_type}`
 
@@ -229,23 +231,18 @@ The staticimp server configration file is "staticimp.yml"
 The project configuration format is exactly the same as server config, except that only the `entries:` are used.
 
 See the sample [server configuration](staticimp.sample.yml) and [project configuration](staticimp.project.yml) files
-for well-commented examples to start with
+for commented example files to start from
 
 ### staticimp config Structure
 
-**Overall Structure:**
- - server settings - `host`/`port`
- - global settings - `timestamp_format`
- - backend configurations
- - entry configurations
-
+**Config Format:**
 - `host:` - host to listen on (default: `"127.0.0.1"`)
 - `port:` - port to listen on (default: `8080`)
-- `timestamp_format:` - `{@timestamp}` format (default: `"%Y%m%dT%H%M%S%.3fZ"`)
+- `timestamp_format:` - format for `{@timestamp}` placeholders (default: `"%Y%m%dT%H%M%S%.3fZ"`)
 - `backends:` - server backends
-  - _map of backends_
+  - _... backends to support ..._
 - `entries:` - global entry configurations
-  - _map of global entries_
+  - _... entry types to support ..._
 
 **Example:**
 ```yaml
@@ -254,7 +251,7 @@ host: "0.0.0.0" # host to listen on (default: "127.0.0.1")
 port: 8080 # port to listen on (default: 8080)
 
 #verbose iso8601 (with microseconds)
-timestamp_format: "%+" # "{@timestamp}" format (default: "%Y%m%dT%H%M%S%.3fZ")
+timestamp_format: "%+" # format for "{@timestamp}" placeholders (default: "%Y%m%dT%H%M%S%.3fZ")
 
 backends:
   gitlab:
@@ -264,8 +261,8 @@ backends:
     #token=... #get from env
 
 entries:
-  comment:` - entry type name (in this case `comment`)
-    fields:` - entry field processing configuration
+  comment: # entry type name (in this case `comment`)
+    fields: # entry field processing
       allowed: [ "name", "email", "url", "message" ]
       required: [ "name", "email","message: ]
       extra:
@@ -289,13 +286,13 @@ entries:
 - `project_config_path:` - project-specific config path (default: "")
 - `project_config_format:` - project-specific config path (default: yaml)
 - `driver:` - which backend driver to use for this backend (required)
-  - current options: gitlab, debug
+  - current options: `gitlab`, `debug`
 - **gitlab specific**
-- `host:` - hostname for gitlab server, with no leading https:// (required)
+- `host:` - hostname for gitlab server, with no leading https://
   - **NOTE:** host and token can be overriden by the `<backend>_<var>` environment variables (e.g. `mybackend_token`)
-- `token:` - gitlab auth token, recommend to load from env var instead to keep out of repo (required)
+- `token:` - gitlab auth token, recommend to load from env var instead to keep out of repo
 - **debug specific**
-  - _currently no debug options_
+  - _currently no options for debug backend_
 
 **Example:**
 ```yaml
@@ -328,7 +325,7 @@ project conf entry types of the same name.
 - `format:` - serialization format for entries (default: `json`)
 - `git:` - _optional_ - git specific entry configuration (these all support placeholders)
   - `path:` - directory path to place entries in (default: `"data/entries"`)
-  - `filename:` - entry file name (default: `"comment-{@timestamp}.yml"`)
+  - `filename:` - entry file name (default: `"entry-{@timestamp}.yml"`)
   - `branch:` - branch to commit entries to (default: `"main"`)
     - if `review: true`, commits entry to `review_branch` with MR to `branch`
   - `commit_message:` - entry commit message (default: `"New staticimp entry"`)
