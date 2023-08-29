@@ -14,6 +14,21 @@ staticimp is just concerned with pushing the user generated content to the repo.
 staticimp, like Staticman, can create yaml/json files in a repository, so if for example you are using a hugo theme that already supports staticman,
 you should be able to support staticimp with minimal changes (staticimp.yml and changing the POST url).
 
+# Work In Progress
+
+staticimp is a work-in-progress. The basic features are stable, but thorough test code is still
+needed and there are some important features that I am still implementing.
+I'm planning on switching to staticimp for some sites I work on, so expect the important features to all be stable soon.
+
+**Features still to implement**
+- thorough test code
+- logging
+- spam protection (probably reCAPTCHA)
+- github as a second backend
+- I might include a filesystem backend for easier configuration testing
+- specify allowed hosts for a backend
+
+
 
 # Inspiration
 staticimp was inspired by the awesome project [Staticman](https://github.com/eduardoboucas/staticman).
@@ -59,20 +74,6 @@ _\* the RAM/startup time numbers are based on informal benchmarking on my dev ma
     - current transforms: slugify, md5, sha256
 - moderated comments
   - commits entries to new branch and creates merge request instead of commiting directly to target branch
-
-
-# Work In Progress
-
-staticimp is a work-in-progress. The basic features are stable, but thorough test code is still
-needed and there are some important features that I am still implementing.
-
-**Features still to implement**
-- thorough test code
-- logging
-- spam protection (probably reCAPTCHA)
-- github as a second backend
-- I might include a filesystem backend for easier configuration testing
-- specify allowed hosts for a backend
 
 
 # Building and Running staticimp
@@ -131,7 +132,7 @@ You can pass `--print-config` to print the server config and exit
 
 Below are some useful oneliners for testing if staticimp is up and working.
 
-the examples using `curl` are probably the ones you want, but there are also `wget` and `nc` (netcat) examples.
+the examples using `curl` are probably the ones you want, but there are also `wget` and `nc` (netcat) examples if needed (e.g. in minimal alpine docker container)
 
 ### Test reachability
 ```bash
@@ -151,11 +152,11 @@ printf 'GET / HTTP/1.1\r\nConnection: close\r\n\r\n' | nc -v -w3 127.0.0.1 8080
 
 ```bash
 #note that project id can be numeric or the full path to the project
+# - e.g. 42 or "myusername/myproject"
 #using curl
 curl -H "Content-Type: application/json" -X POST --data '{"name":"John Doe","email":"johndoe@example.com","comment":"this is a test"}' '127.0.0.1:8080/v1/entry/debug/42/main/comment?slug=staticimp-test'
 
 #using wget
-#NOTE: this fails with internal server error in current version on debug backend (I haven't debugged why yet)
 wget -q -S -O - --header "Content-Type: application/json" --post-data '{"name":"John Doe","email":"johndoe@example.com","comment":"this is a test"}' 'http://127.0.0.1:8080/v1/entry/gitlab/mygroup/myproject/main/comment?slug=staticimp-test'
 
 #using nc
@@ -213,12 +214,12 @@ This lets you merge/close the MR to accept/ignore the comment
 # Migrating from Staticman to staticimp
 The main practical differences between running staticimp and staticman:
 - server/project config files
-  - `staticimp.yml` for server, configurable for project (`staticimp.yml` is a good choice)
   - the staticimp and staticman configuration options are similar, but the config format is different
-    - see [staticimp.sample.yml](staticimp.sample.yml) for a sample server config
+    - see [staticimp.sample.yml](staticimp.sample.yml) for a sample staticimp server config
   - the staticimp server/project config format is the same, but only `entries:` is used from the project conf
 - entry submission URL
   - `/v1/entry/{backend}/{project:.*}/{branch}/{entry_type}`
+- staticimp is an active work-in-progress, so it is possible some features will change, but mostly I'll be filling out the feature set
 
 # Setting up Hugo
 
