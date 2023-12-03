@@ -1,4 +1,4 @@
-//! Simple module for sending sets of fields to backend APIs
+//! module for validating, transforming, and sending entries (sets of fields) to backend APIs
 //!
 //! staticimp takes entrys with fields, performs validation and transformations,
 //! and then sends the entry to a backend (currently just gitlab or the debug backend).
@@ -8,33 +8,42 @@
 //! - this was originally written because staticman was too heavy for some serverless websites I am
 //! building, but it is an awesome project and you should check it out too, especially if you are
 //! already using node and/or have plenty of server resources
-//! - This is an active work in progress (I am currently actively developing this for my own use)
 //!
-//! Features:
-//! - configuration can use placeholders to fill in/transform entries
-//!   - uses rendertemplate (in this crate) for rendering placeholders
-//! - loads configuration from `staticman.yml`
-//! - entries are validated by checking for allowed/required fields
-//!   - doesn't yet support any formatting validation
-//! - moderation (by submiting entry to review branch with MR)
-//! - extra fields generated from config
-//! - field transformations
-//! - supports gitlab and debug backends currently
-//!
-//!
-//!
-//! # Work In Progress
-//!
-//! staticimp is a work-in-progress. The features above all work, but test code isn't included yet
-//! and there are some missing important features that I am still implementing
-//!
+//! The basic staticimp features are stable, but thorough test code is still
+//! needed and reCAPTCHA support (which is needed for practical use on public websites) is only mostly complete.
+//! 
+//! **Features Implemented**
+//! - can support multiple backends simultaneously
+//!  - the supported backend drivers are compiled in, but you can set up multiple backends (e.g. gitlab1,gitlab2) with different configs
+//!  - current backend drivers: gitlab, debug
+//! - flexible configuration support with both server config and project config
+//!   - can take sensitive configuration values (e.g. gitlab token) from environment variables
+//!   - supports placeholders to pull config values from requests
+//!     - e.g. `{@id}` in entry config gets replaced with entry uid
+//!     - uses rendertemplate (in this crate) for rendering placeholders
+//!   - loads server config from `staticimp.yml`
+//!   - project-specific config can be stored in project repo
+//!   - entry validation checks for allowed/required fields
+//!   - generated fields
+//!     - e.g. to add uid/timestamp to stored entry
+//!   - field transforms
+//!     - current transforms: slugify, md5, sha256, to/from base85
+//! - encrypted project secrets
+//!   - public-key encrypt short project secrets, where only the staticimp server has the private key to decrypt
+//!   - useful for storing project-specific secrets in public/shared project repos, e.g. reCAPTCHA secret
+//! - moderated comments
+//!   - commits entries to new branch and creates merge request instead of commiting directly to target branch
+//! 
 //! **Features still to implement**
 //! - thorough test code
 //! - logging
-//! - spam protection (probably reCAPTCHA)
+//! - specify allowed hosts for a backend (**WIP**)
+//! - specify trusted relay hosts (**WIP**)
+//! - reCAPTCHA (**mostly finished**)
 //! - github as a second backend
-//! - I might include a filesystem backend for easier configuration
-//! - specify allowed hosts for a backend
+//! - field format validation
+//! - local git/filesystem backend
+//! - move some of the utility modules to separate files/librarys
 //!
 //!
 //! # Implemented Backends:
@@ -77,7 +86,12 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::io;
+use std::io::Write;
+use std::net::IpAddr;
+use std::net::Ipv4Addr;
+//use std::net::SocketAddr;
 use std::ops::Deref;
+use std::str::FromStr;
 use uuid::Uuid;
 //use std::cell::RefCell;
 //use std::ops::Deref;
@@ -88,14 +102,27 @@ type BoxError = Box<dyn std::error::Error>;
 /// Module error
 ///
 /// Implements [actix_web::ResponseError] so it can be returned directly from actix request handler
+///
+/// TODO: review and probably update the set of ImpError types
 #[derive(Debug)]
 pub enum ImpError {
     /// BadRequest with message and child error
     BadRequest(&'static str, BoxError),
     /// InternalServerError with message and child error
     InternalError(&'static str, BoxError),
+    /// openssl error stack
+    OpensslError(openssl::error::ErrorStack),
+    /// actix send request error
+    AwcSendRequestError(awc::error::SendRequestError),
+    /// Serde url encoding error
+    UrlEncodingError(serde_urlencoded::ser::Error),
+    /// AWC JSON error
+    AwcJsonError(awc::error::JsonPayloadError),
+    /// IP address parse error
+    AddrParseError(std::net::AddrParseError),
+    /// Utf8 error
+    FromUtf8Error(std::string::FromUtf8Error),
     /// Debugging info (returns 200 OK)
-    ///
     Debug(String),
 }
 
@@ -156,6 +183,12 @@ impl Display for ImpError {
         match self {
             BadRequest(s, e) => write!(f, "{}{}", fmt_msg(s), e.to_string()),
             InternalError(s, e) => write!(f, "{}{}", fmt_msg(s), e.to_string()),
+            OpensslError(e) => write!(f, "{}", e.to_string()),
+            AwcSendRequestError(e) => write!(f, "{}", e.to_string()),
+            UrlEncodingError(e) => write!(f, "URL encoding error: {}", e.to_string()),
+            AwcJsonError(e) => write!(f, "{}", e.to_string()),
+            AddrParseError(e) => write!(f, "{}", e.to_string()),
+            FromUtf8Error(e) => write!(f, "{}", e.to_string()),
             Debug(s) => write!(f, "{}", s),
         }
     }
@@ -178,10 +211,22 @@ impl actix_web::ResponseError for ImpError {
         match self {
             BadRequest(_, _) => StatusCode::BAD_REQUEST,
             InternalError(_, _) => StatusCode::INTERNAL_SERVER_ERROR,
+            OpensslError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AwcSendRequestError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            UrlEncodingError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AwcJsonError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AddrParseError(_) => StatusCode::BAD_REQUEST,
+            FromUtf8Error(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Debug(_) => StatusCode::OK,
         }
     }
 }
+
+/// module Result
+///
+/// all Result-returning functions return ImpError
+/// - this helps with cleaner code in actix handler since we can use ?
+pub type ImpResult<R> = Result<R, ImpError>;
 
 /// trait for converting other [Result] types into [ImpResult]
 pub trait OrImpResult<T> {
@@ -192,7 +237,7 @@ pub trait OrImpResult<T> {
     fn or_internal_error(self, message: &'static str) -> ImpResult<T>;
 }
 
-/// converts any [`Result<T,E>`] into [`ImpError<T>`]
+/// converts [`Result<T,E>`] into [`ImpError<T>`]
 ///
 /// E must implement [std::error::Error] (per ImpError)
 impl<T, E> OrImpResult<T> for Result<T, E>
@@ -208,11 +253,412 @@ where
     }
 }
 
-/// module Result
+impl From<std::net::AddrParseError> for ImpError {
+    fn from(value: std::net::AddrParseError) -> Self {
+       ImpError::AddrParseError(value)
+    }
+}
+
+impl From<std::string::FromUtf8Error> for ImpError {
+    fn from(value: std::string::FromUtf8Error) -> Self {
+       ImpError::FromUtf8Error(value)
+    }
+}
+
+impl From<openssl::error::ErrorStack> for ImpError {
+    fn from(value: openssl::error::ErrorStack) -> Self {
+       ImpError::OpensslError(value)
+    }
+}
+
+impl From<awc::error::SendRequestError> for ImpError {
+    fn from(value: awc::error::SendRequestError) -> Self {
+        ImpError::AwcSendRequestError(value)
+    }
+}
+
+impl From<serde_urlencoded::ser::Error> for ImpError {
+    fn from(value: serde_urlencoded::ser::Error) -> Self {
+        ImpError::UrlEncodingError(value)
+    }
+}
+
+impl From<awc::error::JsonPayloadError> for ImpError {
+    fn from(value: awc::error::JsonPayloadError) -> Self {
+        ImpError::AwcJsonError(value)
+    }
+}
+
+impl From<io::Error> for ImpError {
+    fn from(value: io::Error) -> Self {
+       ImpError::InternalError("IO Error",value.into())
+    }
+}
+
+/// base85 encoding (using RFC1924 char set)
 ///
-/// all Result-returning functions return ImpError
-/// - this helps with cleaner code in actix handler since we can use ?
-pub type ImpResult<R> = Result<R, ImpError>;
+/// RFC1924 assumes 128bit integers, this implementation uses 64bit chunks (10 encoded chars)
+///
+/// the decoder ignores non-base85 characters (including whitespace)
+/// - decoding continues at the next base85 character found
+///
+/// it takes 5 base85 symbols to convey 4 bytes of information
+/// - 256^4 = 4294967296
+/// - 85^5  = 4437053125
+pub mod base85 {
+    //use std::num::Wrapping; //Wrapping lets us ignore integer overflow
+    //  - TODO: use Wrapping in release mode (still check overflow in debug)
+
+    /// encodes bytes to base85 ascii chars
+    ///
+    /// encodes 64bit chunks at a time (then trailing bytes)
+    pub fn encode(value: &[u8]) -> String {
+        let chars: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~";
+
+        let in_len = value.len();
+        //first compute length:
+        // - 5 chars per 4 bytes
+        // - if there is a partial 4 byte chunk, we only encode the chars we need
+        let out_len = 5 * (in_len / 4)
+            + if in_len % 4 != 0 {
+                (in_len % 4) + 1
+            } else {
+                0
+            };
+        let mut out = Vec::<u8>::with_capacity(out_len);
+
+        //break into 64bit chunks (10 chars encoded)
+        let chunks = value.chunks_exact(8);
+        let rem = chunks.remainder();
+
+        //loop over complete 8 byte chunks chunks
+        // - for each one we generate 10 output chars
+        for chunk in chunks {
+            let buf = u64::from_be_bytes(chunk.try_into().unwrap());
+            out.extend(
+                (0..=9).rev() //big-endian, so start with the most-significant symbol
+                .map(|i| chars[(buf / 85u64.pow(i) % 85) as usize])
+            );
+        }
+
+        //handle trailing bytes
+        // - pad to 8 bytes (right shifting), convert to u64, then generate output chars
+        if !rem.is_empty() { //need to output (out_len%10) extra chars
+            let mut buf_bytes = [0u8; 8];
+            buf_bytes[8-rem.len()..8].copy_from_slice(rem);
+
+            let buf = u64::from_be_bytes(buf_bytes);
+
+            out.extend(
+                (0..(out_len % 10) as u32).rev() //encode remainder symbols (in big-endian order)
+                .map(|i| chars[(buf / 85u64.pow(i) % 85) as usize])
+            );
+        }
+        
+        //actually from guaranteed ascii-range utf8 (so don't need from_utf8 which validates)
+        //  - TODO: update when ascii chars in rust stable
+        String::from_utf8(out).unwrap()
+    }
+
+    /// decode base85 string to byte array
+    ///
+    /// ignores chars not from RFC1925 base85 character set
+    /// - parses from utf8, so utf8 chars outside ascii range are ignored too
+    ///
+    /// decodes 64bit chunks at a time (then trailing bytes)
+    pub fn decode(value: &str) -> Vec<u8> {
+        //predict output len assuming full string is valid base85
+        // - we ignore non-base85 chars, so actual length may be lower, but we are guaranteed no
+        // extra allocations
+        let mut out = Vec::<u8>::with_capacity(value.len() * 4 / 5);
+
+        ////we use Wrapping so we can allow overflow (shifting bits off the left end rather than
+        ////clearing)
+        //let mut buf = Wrapping(0u64);
+        let mut buf = 0u64;
+        let mut count = 0;
+
+        for ch in value.chars() {
+            if ch.is_ascii() { //TODO: use `.as_ascii().and_then(...)` once in rust stable
+                let c = ch as u8;
+                let index = match c {
+                    b'0'..=b'9' => Some(c - b'0'),
+                    b'A'..=b'Z' => Some(c - b'A' + 10),
+                    b'a'..=b'z' => Some(c - b'a' + 36),
+                    b'!' => Some(62),
+                    b'#' => Some(63),
+                    b'$' => Some(64),
+                    b'%' => Some(65),
+                    b'&' => Some(66),
+                    b'(' => Some(67),
+                    b')' => Some(68),
+                    b'*' => Some(69),
+                    b'+' => Some(70),
+                    b'-' => Some(71),
+                    b';' => Some(72),
+                    b'<' => Some(73),
+                    b'=' => Some(74),
+                    b'>' => Some(75),
+                    b'?' => Some(76),
+                    b'@' => Some(77),
+                    b'^' => Some(78),
+                    b'_' => Some(79),
+                    b'`' => Some(80),
+                    b'{' => Some(81),
+                    b'|' => Some(82),
+                    b'}' => Some(83),
+                    b'~' => Some(84),
+                    _ => None,
+                };
+                if let Some(index) = index {
+                    //buf = buf * Wrapping(85) + Wrapping(index as u64);
+                    buf = buf * 85 + index as u64;
+                    count += 1;
+                    if count == 10 {
+                        count = 0;
+                        out.extend_from_slice(&buf.to_be_bytes());
+                        buf = 0;
+                    }
+                }
+            }
+        }
+        if count > 1 { //if count == 1, 0 extra out bytes
+            let rem_bytes = if count <= 5 {
+                count - 1
+            } else {
+                count - 2
+            };
+            out.extend_from_slice(&buf.to_be_bytes()[8 - rem_bytes..8]);
+        }
+        out
+    }
+}
+
+
+struct IPRange {
+    min: IpAddr,
+    max: IpAddr,
+}
+
+impl IPRange {
+
+}
+
+impl FromStr for IPRange {
+    type Err = ImpError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(slash_i) = s.find('/') {
+            let range_bits = s[slash_i+1..].parse()?;
+            let mut s = &s[0..slash_i];
+            let octets = 0;
+            while let Some(dot_i) = s.find('.') {
+                let octet = s[0..dot_i].parse()?;
+                s = &s[dot_i+1..];
+                let
+                //FIXME: WIP
+            }
+        } else if let Some(star_i) = s.find('*') {
+
+        } else { //TODO: support IPv6 as well as 4
+            let ip = IpAddr::V4(Ipv4Addr::from_str(s)?);
+        }
+        todo!()
+    }
+}
+
+/// recaptcha verification API
+mod recaptcha {
+    use serde::{Serialize, Deserialize};
+
+    use super::{ImpResult, ImpError};
+
+    /// reCAPTCHA config for posted entries
+    #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    pub struct RecaptchaConfig {
+        pub enabled: bool,
+        site_key: String,
+        secret: String,
+    }
+
+    //result of recaptcha verification
+    #[derive(Clone, Debug, Default, Deserialize)]
+    struct VerficationResult {
+        /// whether verification succeeded
+        success: bool,
+        /// challenge timestamp
+        ///
+        /// In ISO format yyyy-MM-dd'T'HH:mm:ssZZ
+        challenge_ts: String, //TODO: parse timestamp
+        /// site hostname
+        hostname: String,
+        /// error codes (if any)
+        error_codes: Vec<String>
+    }
+
+    /// Recaptcha config verification implementation
+    impl RecaptchaConfig {
+        /// verify recaptcha response
+        pub async fn verify(&self, client: &awc::Client, response: &str, remoteip: &str) -> ImpResult<bool> {
+            // response from siteverify is JSON object:
+            //   {
+            //     "success": true|false,
+            //     "challenge_ts": timestamp,  // timestamp of the challenge load (ISO format yyyy-MM-dd'T'HH:mm:ssZZ)
+            //     "hostname": string,         // the hostname of the site where the reCAPTCHA was solved
+            //     "error-codes": [...]        // optional
+            //   }
+            //
+            // Error code reference: TODO: handle error codes
+            //   missing-input-secret	The secret parameter is missing.
+            //   invalid-input-secret	The secret parameter is invalid or malformed.
+            //   missing-input-response	The response parameter is missing.
+            //   invalid-input-response	The response parameter is invalid or malformed.
+            //   bad-request	The request is invalid or malformed.
+            //   timeout-or-duplicate	The response is no longer valid: either is too old or has been used previously.
+            let verify_url = "https://www.google.com/recaptcha/api/siteverify";
+            let result : VerficationResult = client.post(verify_url)
+                .insert_header(("User-Agent", "staticimp/0.1"))
+                .query(
+                    &form_urlencoded::Serializer::new("".to_string())
+                    .append_pair("secret", &self.secret)
+                    .append_pair("response", response)
+                    .append_pair("remoteip", remoteip)
+                    .finish()
+                    .as_str()
+                )?
+                //.content_type("application/json")
+                //.send_json(&request)
+                .send()
+                .await?.json().await?;
+            if result.success {
+            } else { //verification failed: FIXME: handle bad verification
+                Err(ImpError::InternalError("","not implemented".to_string().into()))
+            }
+        }
+    }
+}
+
+use openssl::pkey::{PKey,Private};
+use openssl::encrypt::{Encrypter,Decrypter};
+
+/// Simple Asymmetric key encryptor/decryptor using openssl for encrypting short values
+///
+/// Directly encrypts the value with public key, so only intended for short values like secret keys
+///
+/// Used for keeping secrets in project repos (e.g. recaptcha secret), with only
+/// staticimp being able to actually read the secret (even though it may be stored in a publicly
+/// readable repo)
+pub struct Cryptor {
+    key: PKey<Private>,
+}
+
+#[allow(dead_code)] //FIXME
+impl Cryptor {
+    //use openssl::error::ErrorStack; //openssl functions return ErrorStack
+
+    ///// Generate new EC key (uses SECP256K1)
+    //pub fn new_ec() -> ImpResult<Self> {
+    //    use openssl::ec::{EcKey,EcGroup};
+    //    use openssl::nid::Nid;
+    //    let group = EcGroup::from_curve_name(Nid::SECP256K1)?;
+    //    Ok(Self { key: PKey::from_ec_key(EcKey::generate(&group)?)? })
+    //}
+
+    /// Generate new RSA key
+    pub fn new_rsa(size: u32) -> ImpResult<Self> {
+        use openssl::rsa::Rsa;
+        Ok(Self { key: PKey::from_rsa(Rsa::generate(size)?)? })
+    }
+
+    /// Load key from PEM string
+    pub fn from_pem(key_str: &str) -> ImpResult<Self> {
+        Ok(Self { key: PKey::private_key_from_pem(key_str.as_bytes())? })
+    }
+
+    /// Load key from DER string
+    pub fn from_der(key_str: &str) -> ImpResult<Self> {
+        Ok(Self { key: PKey::private_key_from_der(key_str.as_bytes())? })
+    }
+
+    /// Load key from raw bytes
+    pub fn from_raw_bytes(key_bytes: &[u8], key_type: openssl::pkey::Id) -> ImpResult<Self> {
+        Ok(Self { key: PKey::private_key_from_raw_bytes(key_bytes, key_type)? })
+    }
+
+    /// Load PEM key from file
+    pub fn from_pem_file(path: &str) -> ImpResult<Self> {
+        let key_str = std::fs::read_to_string(path).or_internal_error("Couldn't open key file")?;
+        Ok(Self { key: PKey::private_key_from_pem(key_str.as_bytes())? })
+    }
+
+    /// Get private key as PEM format string
+    pub fn to_pem(&self) -> ImpResult<String> {
+        String::from_utf8(self.key.private_key_to_pem_pkcs8()?)
+            .map_err(|e| ImpError::InternalError("",e.to_string().into()))
+    }
+
+    /// Encrypt using public key
+    pub fn encrypt(&self, from: &[u8]) -> ImpResult<Vec<u8>> {
+        let mut encrypter = Encrypter::new(&self.key)?;
+        encrypter.set_rsa_padding(openssl::rsa::Padding::PKCS1_OAEP)?;
+        let mut to = Vec::new();
+        to.resize(encrypter.encrypt_len(from)?, 0u8);
+        let len = encrypter.encrypt(from,to.as_mut_slice())?;
+        to.resize(len,0u8); //get actual encrypted length (encrypt_len above is for allocation)
+        Ok(to)
+    }
+
+    /// Decrypt using private key
+    pub fn decrypt(&self, from: &[u8]) -> ImpResult<Vec<u8>> {
+        let mut decrypter = Decrypter::new(&self.key)?;
+        decrypter.set_rsa_padding(openssl::rsa::Padding::PKCS1_OAEP)?;
+        let mut to = Vec::new();
+        to.resize(decrypter.decrypt_len(from)?, 0u8);
+        let len = decrypter.decrypt(from,to.as_mut_slice())?;
+        to.resize(len,0u8); //get actual decrypted length (decrypt_len above is for allocation)
+        Ok(to)
+    }
+}
+
+//TODO: support inline key in yaml
+///// serde serialization for Cryptor. Serializes to PEM string
+//impl Serialize for Cryptor {
+//    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+//        serializer.serialize_str(
+//            self.to_pem().map_err(serde::ser::Error::custom)?.as_str()
+//        )
+//    }
+//}
+//
+///// serde deserialization for Cryptor from PEM string
+//impl<'de> Deserialize<'de> for Cryptor {
+//    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+//        //let key_str = String::deserialize(deserializer)?;
+//        deserializer.deserialize_str(CryptorVisitor)
+//    }
+//}
+//
+///// serde visitor for deserializing PEM private keys
+//struct CryptorVisitor;
+//
+///// Visitor implementation for parsing PEM private keys
+//impl<'de> serde::de::Visitor<'de> for CryptorVisitor {
+//    type Value = Cryptor;
+//
+//    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+//        write!(formatter, "a PEM formatted private key string")
+//    }
+//
+//    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E>
+//    {
+//        Cryptor::from_pem(v).map_err(serde::de::Error::custom)
+//    }
+//}
+
+//TODO: implement validation rules
+//enum FieldRule {
+//    
+//}
 
 /// Transformation to apply to a field
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -229,6 +675,17 @@ enum FieldTransformType {
     Md5,
     #[serde(rename = "sha256")]
     Sha256,
+    #[serde(rename = "tobase85")]
+    ToBase85,
+    #[serde(rename = "frombase85")]
+    FromBase85,
+    //TODO: more transforms
+    //#[serde(rename = "base64")]
+    //Base64,
+    //#[serde(rename = "ascii85")]
+    //ascii85,
+    //#[serde(rename = "encrypt")]
+    //Encrypt,
 }
 
 /// Field to generate
@@ -362,6 +819,7 @@ impl SerializationFormat {
     }
 }
 
+
 /// Git-specific entry config
 ///
 /// placeholders are allowed so configuration values can be pulled from entry fields and query
@@ -433,9 +891,9 @@ pub struct EntryConfig {
     /// Whether moderation is enabled
     #[serde(default)]
     review: bool,
-    ///// Whether recaptcha is enabled
-    //#[serde(default)]
-    //recaptcha: bool,
+    ///reCAPTCHA configuration
+    #[serde(default)]
+    pub recaptcha: recaptcha::RecaptchaConfig,
     /// entry serialization format
     #[serde(default)]
     format: SerializationFormat,
@@ -456,6 +914,9 @@ impl EntryConfig {
         } else {
             true
         }
+    }
+    pub fn recaptcha_enabled(&self) -> bool {
+        self.recaptcha.enabled
     }
 }
 
@@ -593,8 +1054,7 @@ impl BackendConfig {
 /// - Configuration override order:
 ///   - service staticimp.yml
 ///   - environment variables
-///   - site staticman.yml (if allow_repo_override set)
-///     - not implemented yet
+///   - project config file (if project_config_path set)
 ///
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -611,6 +1071,9 @@ pub struct Config {
     /// - this gets stored in [NewEntry.timestamp_str] at creation
     #[serde(default = "Config::default_timestamp_format")]
     timestamp_format: String,
+    /// path to private key for encrypting/decrypting secrets
+    #[serde(default)]
+    key_path: String,
     /// configuration for each entry type
     #[serde(default)]
     pub entries: HashMap<String, EntryConfig>,
@@ -626,10 +1089,37 @@ impl Config {
         format.deserialize_reader(f)
     }
 
+    pub fn get_cryptor(&self, gen_key: bool) -> ImpResult<Option<Cryptor>> {
+        if self.key_path.is_empty() {
+            if gen_key {
+                Err(ImpError::InternalError("","No key path set".to_string().into()))
+            } else {
+                Ok(None)
+            }
+        } else {
+            if gen_key {
+                self.gen_keyfile().map(Some)
+            } else {
+                Cryptor::from_pem_file(&self.key_path).map(Some)
+            }
+        }
+    }
+
+    fn gen_keyfile(&self) -> ImpResult<Cryptor> {
+        if std::path::Path::new(&self.key_path).exists() {
+            Err(ImpError::InternalError("","Key file already exists".to_string().into()))
+        } else {
+            let mut f = std::fs::File::create(&self.key_path)?;
+            let cryptor = Cryptor::new_rsa(4096)?;
+            f.write_all(cryptor.to_pem()?.as_bytes())?;
+            Ok(cryptor)
+        }
+    }
+
     /// override config parameters from environment variables
     ///
     /// takes and returns self, since we currently always call it after loading
-    /// - makes for clean code (see examples)
+    /// - makes for clean code (see Examples below)
     ///
     /// Supported overrides:
     /// - `<backend>_host` - hostname for the specified backend
@@ -705,18 +1195,18 @@ impl Config {
     }
 }
 
-/// Project-specific config (project entry types)
+/// Project-specific config
 ///
 /// This is loaded from project_config_path for each project (if the config value is set)
 ///
-/// project config consists of a list of entry types.
-/// - these override same-name global entries
-/// - global entry types (that haven't been overriden) are still available
+/// includes optional recaptcha configuration and 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProjectConfig {
     /// project-specific entry types
     ///
-    /// project entries override global config entry types
+    /// project entries override global config entry types with the same name
+    /// - global entry types (that haven't been overriden) are still available
+    #[serde(default)]
     pub entries: HashMap<String, EntryConfig>,
 }
 
@@ -864,6 +1354,8 @@ impl NewEntry {
                     Slugify => slugify(&field),
                     Md5 => format!("{:x}", md5::compute(&field)),
                     Sha256 => sha256::digest(field.as_str()),
+                    ToBase85 => base85::encode(field.as_bytes()),
+                    FromBase85 => String::from_utf8(base85::decode(&field))?,
                 }
             }
         }
@@ -1388,5 +1880,119 @@ impl GitAPI for GitlabAPI {
             .query_async(&self.client)
             .await
             .or_bad_request("Gitlab get_branch failed")
+    }
+}
+
+
+////example from serde docs: https://serde.rs/string-or-struct.html
+//FIXME: DELETEME
+//fn string_or_struct<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+//where
+//    T: Deserialize<'de> + FromStr<Err = Void>,
+//    D: Deserializer<'de>,
+//{
+//    // This is a Visitor that forwards string types to T's `FromStr` impl and
+//    // forwards map types to T's `Deserialize` impl. The `PhantomData` is to
+//    // keep the compiler from complaining about T being an unused generic type
+//    // parameter. We need T in order to know the Value type for the Visitor
+//    // impl.
+//    struct StringOrStruct<T>(PhantomData<fn() -> T>);
+//
+//    impl<'de, T> Visitor<'de> for StringOrStruct<T>
+//    where
+//        T: Deserialize<'de> + FromStr<Err = Void>,
+//    {
+//        type Value = T;
+//
+//        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+//            formatter.write_str("string or map")
+//        }
+//
+//        fn visit_str<E>(self, value: &str) -> Result<T, E>
+//        where
+//            E: de::Error,
+//        {
+//            Ok(FromStr::from_str(value).unwrap())
+//        }
+//
+//        fn visit_map<M>(self, map: M) -> Result<T, M::Error>
+//        where
+//            M: MapAccess<'de>,
+//        {
+//            // `MapAccessDeserializer` is a wrapper that turns a `MapAccess`
+//            // into a `Deserializer`, allowing it to be used as the input to T's
+//            // `Deserialize` implementation. T then deserializes itself using
+//            // the entries from the map visitor.
+//            Deserialize::deserialize(de::value::MapAccessDeserializer::new(map))
+//        }
+//    }
+//
+//    deserializer.deserialize_any(StringOrStruct(PhantomData))
+//}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// test [base85] encoder/decoder
+    #[test]
+    fn test_base85() {
+        //TODO: test all base85 symbols
+
+        let plaintext = b"Hello World";
+        let b85 = base85::encode(plaintext);
+        assert_eq!(base85::decode(&b85), plaintext);
+
+        let plaintext = b"ABCDEFGH";
+        let b85 = base85::encode(plaintext);
+        assert_eq!(base85::decode(&b85), plaintext);
+
+        let plaintext = b"ABCDEFGHI";
+        let b85 = base85::encode(plaintext);
+        assert_eq!(base85::decode(&b85), plaintext);
+        
+        let plaintext : &[u8] = &[ 0 ];
+        let b85 = base85::encode(plaintext);
+        assert_eq!(base85::decode(&b85), plaintext);
+
+        let plaintext : &[u8] = &[ 0; 8 ];
+        let b85 = base85::encode(plaintext);
+        assert_eq!(base85::decode(&b85), plaintext);
+
+        let plaintext : &[u8] = &[ 255; 8 ];
+        let b85 = base85::encode(plaintext);
+        assert_eq!(base85::decode(&b85), plaintext);
+        
+        let plaintext : &[u8] = &[ 1 ];
+        let b85 = base85::encode(plaintext);
+        assert_eq!(base85::decode(&b85), plaintext);
+        
+        let plaintext : &[u8] = &[ 1, 2 ];
+        let b85 = base85::encode(plaintext);
+        assert_eq!(base85::decode(&b85), plaintext);
+        
+        let plaintext : &[u8] = &[ 1, 2, 3 ];
+        let b85 = base85::encode(plaintext);
+        assert_eq!(base85::decode(&b85), plaintext);
+        
+        let plaintext : &[u8] = &[ 1, 2, 3, 4, 5, 6, 7 ];
+        let b85 = base85::encode(plaintext);
+        assert_eq!(base85::decode(&b85), plaintext);
+        
+        let plaintext : &[u8] = &[ 1, 2, 3, 4, 5, 6, 7, 8 ];
+        let b85 = base85::encode(plaintext);
+        assert_eq!(base85::decode(&b85), plaintext);
+        
+        let plaintext : &[u8] = &[ 1, 2, 3, 4, 5, 6, 7, 8, 9 ];
+        let b85 = base85::encode(plaintext);
+        assert_eq!(base85::decode(&b85), plaintext);
+    }
+
+    /// test [Cryptor] public/private key encryption
+    #[test]
+    fn test_cryptor() {
+        let cryptor = Cryptor::new_rsa(4096).unwrap();
+        let plaintext = b"hello world";
+        assert_eq!(cryptor.decrypt(&cryptor.encrypt(plaintext).unwrap()).unwrap(),plaintext);
     }
 }

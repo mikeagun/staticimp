@@ -5,7 +5,7 @@ staticimp (static imp) is a rust-based web service that receives user-generated 
 The main goal of staticimp is to support dynamic content (e.g. blog post comments) on a fully static website using automatic build+deployment.
 
 staticimp consists of a small web service which handles POST requests from HTML forms (it also accepts json and yaml),
-performs validation and transformations, then uploads them using a backend api. staticman also supports moderation,
+performs validation and transformations, then uploads them using a backend api. staticimp also supports moderation,
 where the file is commited to a new branch and a merge request is created, instead of commiting the files directly to the main branch.
 
 The actual rendering of the comments (or whatever you are using staticimp for) is up to your static site generator (SSG),
@@ -14,19 +14,42 @@ staticimp is just concerned with pushing the user generated content to the repo.
 staticimp, like Staticman, can create yaml/json files in a repository, so if for example you are using a hugo theme that already supports staticman,
 you should be able to support staticimp with minimal changes (staticimp.yml and changing the POST url).
 
-# Work In Progress
+# Features:
 
-staticimp is a work-in-progress. The basic features are stable, but thorough test code is still
-needed and there are some important features that I am still implementing.
-I'm planning on switching to staticimp for some sites I work on, so expect the important features to all be stable soon.
+The basic staticimp features are stable, but thorough test code is still
+needed and reCAPTCHA support (which is needed for practical use on public websites) is only mostly complete.
+
+**Features Implemented**
+- can support multiple backends simultaneously
+ - the supported backend drivers are compiled in, but you can set up multiple backends (e.g. gitlab1,gitlab2) with different configs
+ - current backend drivers: gitlab, debug
+- flexible configuration support with both server config and project config
+  - can take sensitive configuration values (e.g. gitlab token) from environment variables
+  - supports placeholders to pull config values from requests
+    - e.g. `{@id}` in entry config gets replaced with entry uid
+    - uses rendertemplate (in this crate) for rendering placeholders
+  - loads server config from `staticimp.yml`
+  - project-specific config can be stored in project repo
+  - entry validation checks for allowed/required fields
+  - generated fields
+    - e.g. to add uid/timestamp to stored entry
+  - field transforms
+    - current transforms: slugify, md5, sha256, to/from base85
+- encrypted project secrets
+  - public-key encrypt short project secrets, where only the staticimp server has the private key to decrypt
+  - useful for storing project-specific secrets in public/shared project repos, e.g. reCAPTCHA secret
+- moderated comments
+  - commits entries to new branch and creates merge request instead of commiting directly to target branch
 
 **Features still to implement**
 - thorough test code
 - logging
-- spam protection (probably reCAPTCHA)
+- specify allowed hosts for a backend (**WIP**)
+- specify trusted relay hosts (**WIP**)
+- reCAPTCHA (**mostly finished**)
 - github as a second backend
-- I might include a filesystem backend for easier configuration testing
-- specify allowed hosts for a backend
+- field format validation
+- local git/filesystem backend
 
 
 
@@ -45,7 +68,7 @@ In my use and testing staticman takes:
 _NOTE: none of the above may matter if you have a large webserver that is always running, has 100s of MB free memory, and has lots of disk space,
 but might very much matter on a small VPS_
 
-While the above numbers could probably be reduced (maybe even significantly), Node isn't known for for being lightweight, so I wrote staticimp to solve the same static-site/dynamic-content problem with a much smaller footprint.
+While the above numbers could probably be reduced (maybe even significantly), Node isn't known for for being lightweight, so I wrote staticimp as a static-site/dynamic-content solution with a much smaller footprint.
 
 
 # Resources
@@ -56,24 +79,6 @@ staticimp is a lightweight solution to the static-site/dynamic-content problem:
 
 _\* the RAM/startup time numbers are based on informal benchmarking on my dev machine_
 
-
-# Features:
-- can support multiple backends simultaneously
- - the supported backend drivers are compiled in, but you can set up multiple backends (e.g. gitlab1,gitlab2) with different configs
- - current backend drivers: gitlab, debug
-- flexible configuration support with both server config and project config
-  - can take sensitive configuration values (e.g. gitlab token) from environment variables
-  - supports placeholders to pull config values from requests
-    - e.g. `{@id}` in entry config gets replaced with entry uid
-  - loads server config from `staticman.yml`
-  - project-specific config can be stored in project repo
-  - entry validation checks for allowed/required fields
-  - generated fields
-    - e.g. to add uid/timestamp to stored entry
-  - field transforms
-    - current transforms: slugify, md5, sha256
-- moderated comments
-  - commits entries to new branch and creates merge request instead of commiting directly to target branch
 
 
 # Building and Running staticimp
@@ -214,7 +219,7 @@ This lets you merge/close the MR to accept/ignore the comment
 # Migrating from Staticman to staticimp
 The main practical differences between running staticimp and staticman:
 - server/project config files
-  - the staticimp and staticman configuration options are similar, but the config format is different
+  - though the basic configuration options are similar, the config format is different
     - see [staticimp.sample.yml](staticimp.sample.yml) for a sample staticimp server config
   - the staticimp server/project config format is the same, but only `entries:` is used from the project conf
 - entry submission URL
@@ -302,7 +307,7 @@ gitlab:
 
   driver: gitlab
   host: git.example.com
-  #token=... #get from env
+  #token=... #get from env (or set here)
 ```
 
 ### Entry Type Configuration

@@ -2,7 +2,7 @@
 //!
 //! # Description and usage
 //!
-//! rendertemplate provides very simple template expanding code (mainly with the [Render] trait)
+//! rendertemplate provides for very simple template expanding code (mainly with the [Render] trait)
 //!
 //! There are additional utils for tokenizing and expanding string placeholders (using `Render`)
 //!

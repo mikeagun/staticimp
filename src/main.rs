@@ -29,16 +29,56 @@ use std::sync::Arc;
 use actix_web::http::header;
 use actix_web::http::header::ContentType;
 
-///
+///staticimp config
 type ConfigData = Data<Arc<Config>>;
+
 /// cached backend map for actix handlers
 ///
 /// Threadsafe, even though it is currently only used for per-worker backends
 type BackendsData = Data<RwLock<HashMap<String, Mutex<Backend>>>>;
 
+///staticimp cryptor (private key for project secrets)
+type CryptorData = Data<Arc<Option<Cryptor>>>;
+
+/// root handler -- just return hello message
 #[actix_web::get("/")]
 async fn index() -> impl actix_web::Responder {
     format!("Hello from staticimp version {}!\n", &VERSION)
+}
+
+/// encrypt secret value
+/// 
+/// e.g. for recaptcha secrets
+///
+/// The staticimp server keeps both the private and public keys.
+/// Encrypted secrets can be stored in project repos so server
+/// can pull encrypted project-specific config from public repos
+///
+/// Arguments:
+/// - value to encrypt comes from the uri path
+#[actix_web::get("/v1/encrypt-secret/{value:.*}")]
+async fn encrypt_secret_handler(
+    _cfg: ConfigData,
+    cryptor: CryptorData,
+    _req: actix_web::HttpRequest,
+    value: web::Path<String>
+) -> impl actix_web::Responder {
+    let value = value.into_inner(); //secret value to encrypt
+    match cryptor.as_ref().as_ref() {
+        Some(cryptor) =>
+            cryptor.encrypt(value.as_bytes()).map(
+                |encrypted| 
+                actix_web::HttpResponse::build(actix_web::http::StatusCode::OK)
+                //.insert_header(ContentType::html())
+                .insert_header(ContentType::plaintext())
+                //.insert_header(ContentType::form_url_encoded())
+                //.body(form_urlencoded::byte_serialize(&encrypted).collect::<String>())
+                //.body(staticimp::base85::encode(&encrypted))
+                .body(cryptor.decrypt(&staticimp::base85::decode(&staticimp::base85::encode(&encrypted))).unwrap())
+            ),
+        None =>
+            Err(ImpError::InternalError("","Key not set".to_string().into())),
+    }
 }
 
 //use staticimp::ImpResult;
@@ -53,7 +93,7 @@ async fn index() -> impl actix_web::Responder {
 /// - entry fields taken from request body (based on ContentType)
 /// - params taken from request query parameters
 #[actix_web::post("/v1/entry/{backend}/{project:.*}/{branch}/{entry_type}")]
-async fn post_comment_handler(
+async fn post_entry_handler(
     cfg: ConfigData,
     backends: BackendsData,
     pathargs: web::Path<(String, String, String, String)>,
@@ -72,12 +112,13 @@ async fn post_comment_handler(
     let mut body = body.into_inner();
     let content_type = content_type.0;
 
+
     let query_params = web::Query::<HashMap<String, String>>::from_query(req.query_string())
         .or_bad_request("Bad query args")?
         .into_inner();
 
     //parse entry from request
-    // supports:
+    // supported post formats:
     // - html form
     // - json
     // - yaml (using application/yaml content-type)
@@ -105,7 +146,26 @@ async fn post_comment_handler(
         .get(&backend_name)
         .ok_or_else(|| ImpError::BadRequest("", "Unknown backend".into()))?;
 
-    // get backend to use
+    let _client_addr = if let Some(client_addr) = req.peer_addr() {
+        //TODO: get proxied realip or client addr for trusted proxies
+        //if client_addr >= "192.168.0.1".parse().unwrap() && client_addr <= "192.168.0.254".parse().unwrap() {
+        //    if let Some(real_addr) = req.connection_info().realip_remote_addr() {
+        //        Some(real_addr.parse().or_internal_error("Failed to parse client addr")?)
+        //    } else {
+        //        Some(client_addr)
+        //    }
+        //} else {
+            Some(client_addr)
+        //}
+    } else {
+        None
+    };
+    //TODO: verify client_addr against allowed_hosts for backend
+
+    //TODO: validate recaptcha
+
+
+    // get backend client to use
     // - first we get a read lock on backends
     //   - we hold the read lock for the rest of this function to keep the client mutex borrow valid
     // - if we already have a backend client for backend_name, return the mutex for it
@@ -144,13 +204,14 @@ async fn post_comment_handler(
     // - fall back to global conf entry types
     // - entry conf in Cow so we don't need to clone global entry conf
     //   - borrowed from global conf or owned from project conf
+    //   - TODO: cache project confs (with project specific cache timeout)
     let entry_conf = backend
         .lock()
         .get_conf(&backend_conf, &project_id, &branch)
         .await?
-        //all we need is the current entry type
+        //all we need is the current entry type (not all entries)
         .and_then(|mut conf| conf.entries.remove(&entry_type))
-        //wrap it in an Owned Cow
+        //wrap it in an Owned Cow (since it was fetched from project conf, not borrowed from server conf)
         .and_then(|conf| Some(Cow::Owned(conf)))
         .or_else(||
             // try global entry config (and wrap in Cow)
@@ -176,6 +237,10 @@ async fn post_comment_handler(
             }
         })?;
 
+    if entry_conf.recaptcha_enabled() {
+        todo!("Validate Recaptcha if enabled");
+    }
+
     //create the NewEntry and process the entry fields
     let newentry = cfg
         .new_entry(project_id, branch, entry_fields, query_params)
@@ -188,19 +253,22 @@ async fn post_comment_handler(
 
 /// Load staticimp config from file/stdin
 ///
-/// determines where/how to load config from using `env::args()`
+/// Also parses program arguments passed to exec (e.g. from command line).
+///
+/// determines path and format of config using program arguments
 /// - `-f <path>` - load config from file
 /// - `-f -` - load config from stdin
 /// - `--yaml | --yml` - config is yaml
 ///   - this is the default unless path ends in ".json"
 /// - `--json` - config is json
-fn load_config() -> ImpResult<staticimp::Config> {
+fn load_config() -> ImpResult<(staticimp::Config,Option<Cryptor>)> {
     use staticimp::SerializationFormat::{Json, Yaml};
     let mut config_path = "staticimp.yml".to_string();
     let mut config_format = None;
     let mut print_config = false;
+    let mut gen_key = false;
 
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1); //skip program path
 
     while let Some(arg) = args.next() {
         if arg == "-f" {
@@ -212,7 +280,9 @@ fn load_config() -> ImpResult<staticimp::Config> {
             config_format = Some(Yaml);
         } else if arg == "--json" {
             config_format = Some(Json);
-        } else if arg == "--print-config" {
+        } else if arg == "--gen-key" { //generate new key file (error if it already exists)
+            gen_key = true;
+        } else if arg == "--print-config" { //print config and exit
             print_config = true;
         } else {
             return Err(ImpError::InternalError(
@@ -240,7 +310,8 @@ fn load_config() -> ImpResult<staticimp::Config> {
             //we use a debug error to print the config and exit
             Err(ImpError::debug(config_format.serialize_pretty(&conf)?))
         } else {
-            Ok(conf)
+            let cryptor = conf.get_cryptor(gen_key)?;
+            Ok((conf,cryptor))
         }
     })
 }
@@ -248,7 +319,7 @@ fn load_config() -> ImpResult<staticimp::Config> {
 //main - load config and start HttpServer
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let cfg = load_config().unwrap_or_else(|e| {
+    let (cfg,cryptor) = load_config().unwrap_or_else(|e| {
         match e {
             ImpError::Debug(s) => println!("{}", s),
             e => eprintln!("{}", e),
@@ -259,6 +330,8 @@ async fn main() -> std::io::Result<()> {
     //wrap Config in ConfigData for actix worker threads
     let cfg = ConfigData::new(Arc::new(cfg));
 
+    let cryptor = CryptorData::new(Arc::new(cryptor));
+
     //let backends : HashMap<String,Backend> = cfg.backends.iter().map(|(k,v)| (k,v.new_client().await?)).collect();
     //let backends = BackendsData::new(Box::new(backends));
     let backends = BackendsData::new(RwLock::from(HashMap::new())); //let threads create clients as-needed
@@ -268,10 +341,12 @@ async fn main() -> std::io::Result<()> {
     actix_web::HttpServer::new(move || {
         actix_web::App::new()
             .app_data(cfg.clone())
+            .app_data(cryptor.clone())
             .app_data(backends.clone())
             //.app_data(Data::new(awc::Client::new()))
             .service(index)
-            .service(post_comment_handler)
+            .service(encrypt_secret_handler)
+            .service(post_entry_handler)
     })
     .bind((host.as_str(), port))?
     .run()
