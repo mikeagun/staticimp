@@ -35,6 +35,8 @@ needed and reCAPTCHA support (which is needed for practical use on public websit
     - e.g. to add uid/timestamp to stored entry
   - field transforms
     - current transforms: slugify, md5, sha256, to/from base85
+- specify trusted proxies - trusts realip from proxy as actual client address
+- specify allowed hosts for a backend - e.g. to restrict access to internal or test backend
 - encrypted project secrets
   - public-key encrypt short project secrets, where only the staticimp server has the private key to decrypt
   - useful for storing project-specific secrets in public/shared project repos, e.g. reCAPTCHA secret
@@ -44,9 +46,7 @@ needed and reCAPTCHA support (which is needed for practical use on public websit
 **Features still to implement**
 - thorough test code
 - logging
-- specify allowed hosts for a backend (**WIP**)
-- specify trusted relay hosts (**WIP**)
-- reCAPTCHA (**mostly finished**)
+- reCAPTCHA (**mostly implemented**)
 - github as a second backend
 - field format validation
 - local git/filesystem backend

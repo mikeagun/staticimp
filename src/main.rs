@@ -146,24 +146,30 @@ async fn post_entry_handler(
         .get(&backend_name)
         .ok_or_else(|| ImpError::BadRequest("", "Unknown backend".into()))?;
 
-    let _client_addr = if let Some(client_addr) = req.peer_addr() {
-        //TODO: get proxied realip or client addr for trusted proxies
-        //if client_addr >= "192.168.0.1".parse().unwrap() && client_addr <= "192.168.0.254".parse().unwrap() {
-        //    if let Some(real_addr) = req.connection_info().realip_remote_addr() {
-        //        Some(real_addr.parse().or_internal_error("Failed to parse client addr")?)
-        //    } else {
-        //        Some(client_addr)
-        //    }
-        //} else {
+    let client_addr = if let Some(client_addr) = req.peer_addr() {
+        let client_addr = client_addr.ip();
+        if cfg.trusted_proxies.iter().any(|&a| a.contains(&client_addr)) {
+            if let Some(real_addr) = req.connection_info().realip_remote_addr() {
+                Some(real_addr.parse().or_internal_error("Failed to parse client addr")?)
+            } else {
+                Some(client_addr)
+            }
+        } else {
             Some(client_addr)
-        //}
+        }
     } else {
         None
     };
-    //TODO: verify client_addr against allowed_hosts for backend
 
-    //TODO: validate recaptcha
-
+    if !backend_conf.allowed_hosts.is_empty() {
+        if let Some(client_addr) = client_addr {
+            if backend_conf.allowed_hosts.iter().any(|&a| a.contains(&client_addr)) {
+                return Err(ImpError::BadRequest("", "Host not allowed".into()));
+            }
+        } else {
+            return Err(ImpError::BadRequest("", "Host not allowed".into()));
+        }
+    }
 
     // get backend client to use
     // - first we get a read lock on backends
@@ -238,7 +244,10 @@ async fn post_entry_handler(
         })?;
 
     if entry_conf.recaptcha_enabled() {
-        todo!("Validate Recaptcha if enabled");
+        //if !entry_conf.recaptcha.verify(client, response, client_addr).await? {
+        //    return Err(ImpError::BadRequest("", "Recaptcha failed".into()));
+        //}
+        todo!("Validate Recaptcha if enabled"); //FIXME: validate
     }
 
     //create the NewEntry and process the entry fields

@@ -31,3 +31,5 @@ sha256 = "1.2.2"
 parking_lot = "0.12.1"
 form_urlencoded = "1.2.0"
 serde_urlencoded = "0.7.1"
+#iprange = { version = "0.6.7", features = ["serde"] }
+ipnet = { version = "2.9.0", features = ["serde"] }

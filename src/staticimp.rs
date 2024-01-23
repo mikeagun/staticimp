@@ -28,6 +28,8 @@
 //!     - e.g. to add uid/timestamp to stored entry
 //!   - field transforms
 //!     - current transforms: slugify, md5, sha256, to/from base85
+//! - specify trusted proxies - trusts realip from proxy as actual client address
+//! - specify allowed hosts for a backend - e.g. to restrict access to internal or test backend
 //! - encrypted project secrets
 //!   - public-key encrypt short project secrets, where only the staticimp server has the private key to decrypt
 //!   - useful for storing project-specific secrets in public/shared project repos, e.g. reCAPTCHA secret
@@ -37,9 +39,7 @@
 //! **Features still to implement**
 //! - thorough test code
 //! - logging
-//! - specify allowed hosts for a backend (**WIP**)
-//! - specify trusted relay hosts (**WIP**)
-//! - reCAPTCHA (**mostly finished**)
+//! - reCAPTCHA (**mostly implemented**)
 //! - github as a second backend
 //! - field format validation
 //! - local git/filesystem backend
@@ -72,6 +72,8 @@ use gitlab::api::projects::merge_requests::CreateMergeRequest;
 use gitlab::api::projects::repository::branches::CreateBranch;
 use gitlab::api::projects::repository::files::CreateFile;
 use gitlab::api::AsyncQuery;
+use ipnet::IpNet;
+//use iprange::IpRange;
 use markdown_table::MarkdownTable;
 use md5;
 use rendertemplate::render_str;
@@ -87,11 +89,8 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::io;
 use std::io::Write;
-use std::net::IpAddr;
-use std::net::Ipv4Addr;
 //use std::net::SocketAddr;
 use std::ops::Deref;
-use std::str::FromStr;
 use uuid::Uuid;
 //use std::cell::RefCell;
 //use std::ops::Deref;
@@ -434,39 +433,6 @@ pub mod base85 {
     }
 }
 
-
-struct IPRange {
-    min: IpAddr,
-    max: IpAddr,
-}
-
-impl IPRange {
-
-}
-
-impl FromStr for IPRange {
-    type Err = ImpError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some(slash_i) = s.find('/') {
-            let range_bits = s[slash_i+1..].parse()?;
-            let mut s = &s[0..slash_i];
-            let octets = 0;
-            while let Some(dot_i) = s.find('.') {
-                let octet = s[0..dot_i].parse()?;
-                s = &s[dot_i+1..];
-                let
-                //FIXME: WIP
-            }
-        } else if let Some(star_i) = s.find('*') {
-
-        } else { //TODO: support IPv6 as well as 4
-            let ip = IpAddr::V4(Ipv4Addr::from_str(s)?);
-        }
-        todo!()
-    }
-}
-
 /// recaptcha verification API
 mod recaptcha {
     use serde::{Serialize, Deserialize};
@@ -531,8 +497,10 @@ mod recaptcha {
                 .send()
                 .await?.json().await?;
             if result.success {
+                Ok(true)
             } else { //verification failed: FIXME: handle bad verification
-                Err(ImpError::InternalError("","not implemented".to_string().into()))
+                //Err(ImpError::InternalError("","not implemented".to_string().into()))
+                Ok(false)
             }
         }
     }
@@ -1014,6 +982,10 @@ pub struct BackendConfig {
     #[serde(default)]
     project_config_format: Option<SerializationFormat>,
 
+    /// IPs allowed to use backend (default: all)
+    #[serde(default)]
+    pub allowed_hosts: Vec<IpNet>,
+
     /// Driver specific config settings
     ///
     /// In config file these get flattened into the backend (since they shouldn't overlap with
@@ -1067,6 +1039,9 @@ pub struct Config {
     /// port to listen on
     #[serde(default = "Config::default_port")]
     pub port: u16,
+    /// IPs to trust as HTTP proxies
+    #[serde(default)]
+    pub trusted_proxies: Vec<IpNet>,
     /// format used for `{@timestamp}` placeholders
     /// - this gets stored in [NewEntry.timestamp_str] at creation
     #[serde(default = "Config::default_timestamp_format")]
